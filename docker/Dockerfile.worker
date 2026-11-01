@@ -1,0 +1,25 @@
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/backend:/app \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY backend/requirements.txt backend/requirements.txt
+RUN pip install --no-cache-dir -r backend/requirements.txt
+
+COPY backend ./backend
+COPY pipelines ./pipelines
+COPY taxonomy ./taxonomy
+COPY synthetic_banking_app_feedback_1800.csv ./
+COPY sample_backlog_upload.csv ./
+
+RUN mkdir -p /app/data/local/objects \
+    && useradd --create-home --uid 10002 worker \
+    && chown -R worker:worker /app
+
+USER worker
+
+ENTRYPOINT ["python", "-m", "pipelines.jobs.run_pipeline"]

@@ -1,0 +1,39 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    environment:
+      ENVIRONMENT: docker
+      DATA_DIR: /app/data
+      OBJECT_STORE: local
+      AUTO_SEED_SOURCE: "true"
+      AUTO_RUN_SAMPLE: "true"
+      EXTRACTION_PROVIDER: rules
+      EMBEDDING_PROVIDER: local
+      CORS_ORIGINS: http://localhost:8080
+    ports:
+      - "8000:8000"
+    volumes:
+      - bci-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 12
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  bci-data:

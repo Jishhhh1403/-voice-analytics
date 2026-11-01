@@ -1,0 +1,9 @@
+{
+  "uri": "local://feedback/source/synthetic_banking_app_feedback_1800.csv",
+  "key": "feedback/source/synthetic_banking_app_feedback_1800.csv",
+  "generation": "c609327c5d0eed15f185b5be",
+  "size_bytes": 425806,
+  "sha256": "c609327c5d0eed15f185b5be46bd1127bf13cccc57cf9a3a6e9b4faf2cd5492a",
+  "uploaded_at": "2026-10-30T10:34:44.393090+00:00",
+  "content_type": "text/csv"
+}

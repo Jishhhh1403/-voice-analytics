@@ -1,0 +1,598 @@
+version: "1.0.0"
+updated_at: "2026-10-30"
+description: >
+  Versioned banking application taxonomy for the Customer Intelligence platform.
+  A node describes an app module/feature (not a customer-journey stage). Problems
+  may map to a primary feature node and optional secondary nodes.
+nodes:
+  - node_id: authentication
+    parent_id: null
+    node_type: module
+    display_name: Authentication
+    description: Login, credentials, OTP, biometric verification and session management.
+    synonyms: [login, sign in, sign-in, access, authentication, security check]
+    status: active
+
+  - node_id: auth.login
+    parent_id: authentication
+    node_type: feature
+    display_name: Login
+    description: Username/password and general account access.
+    synonyms: [login, log in, sign in, password, credentials, access account]
+    status: active
+
+  - node_id: auth.password_reset
+    parent_id: authentication
+    node_type: feature
+    display_name: Password reset
+    description: Forgot-password and credential recovery.
+    synonyms: [forgot password, reset password, change password, password recovery]
+    status: active
+
+  - node_id: auth.otp
+    parent_id: authentication
+    node_type: feature
+    display_name: OTP verification
+    description: One-time passwords and verification codes.
+    synonyms: [otp, one time password, verification code, security code, sms code]
+    status: active
+
+  - node_id: auth.biometric
+    parent_id: authentication
+    node_type: feature
+    display_name: Biometric login
+    description: Fingerprint, face recognition and device biometric login.
+    synonyms: [biometric, fingerprint, face id, face recognition, face unlock]
+    status: active
+
+  - node_id: auth.session
+    parent_id: authentication
+    node_type: feature
+    display_name: Session management
+    description: Session expiry, logout behaviour and re-authentication.
+    synonyms: [session, signed out, logged out, session expired, re-authenticate, timeout]
+    status: active
+
+  - node_id: payments
+    parent_id: null
+    node_type: module
+    display_name: Payments
+    description: Fund transfers, UPI, bill payments, recharge, status and refunds.
+    synonyms: [payments, transfer, send money, remittance, pay]
+    status: active
+
+  - node_id: payments.upi
+    parent_id: payments
+    node_type: feature
+    display_name: UPI payments
+    description: UPI transfers and merchant payments.
+    synonyms: [upi, unified payments interface, merchant payment, qr payment, vpa]
+    status: active
+
+  - node_id: payments.imps
+    parent_id: payments
+    node_type: feature
+    display_name: IMPS transfer
+    description: Immediate Payment Service bank transfers.
+    synonyms: [imps, immediate transfer, immediate payment]
+    status: active
+
+  - node_id: payments.neft
+    parent_id: payments
+    node_type: feature
+    display_name: NEFT transfer
+    description: National Electronic Funds Transfer.
+    synonyms: [neft, national electronic funds transfer]
+    status: active
+
+  - node_id: payments.rtgs
+    parent_id: payments
+    node_type: feature
+    display_name: RTGS transfer
+    description: Real Time Gross Settlement high-value transfers.
+    synonyms: [rtgs, real time gross settlement, high value transfer]
+    status: active
+
+  - node_id: payments.status
+    parent_id: payments
+    node_type: feature
+    display_name: Transfer status and confirmation
+    description: Pending, successful or failed state and transaction references.
+    synonyms: [transfer status, pending, transaction status, confirmation, reference number, submitted, draft, retry]
+    status: active
+
+  - node_id: payments.bill_payment
+    parent_id: payments
+    node_type: feature
+    display_name: Bill payments
+    description: Utility and credit-card bill payments.
+    synonyms: [bill payment, pay bill, utility bill, electricity bill, credit card bill, biller]
+    status: active
+
+  - node_id: payments.recharge
+    parent_id: payments
+    node_type: feature
+    display_name: Recharge
+    description: Mobile and DTH recharges.
+    synonyms: [recharge, prepaid, mobile recharge, dth]
+    status: active
+
+  - node_id: payments.refund
+    parent_id: payments
+    node_type: feature
+    display_name: Refunds
+    description: Failed-payment refunds and refund tracking.
+    synonyms: [refund, reversal, money back, failed recharge refund]
+    status: active
+
+  - node_id: beneficiaries
+    parent_id: null
+    node_type: module
+    display_name: Beneficiary management
+    description: Add, verify, edit, delete and select beneficiaries.
+    synonyms: [beneficiary, payee, recipient, saved beneficiary]
+    status: active
+
+  - node_id: beneficiary.add
+    parent_id: beneficiaries
+    node_type: feature
+    display_name: Add beneficiary
+    description: Register a new beneficiary or payee.
+    synonyms: [add beneficiary, new beneficiary, add payee, register beneficiary, account details, ifsc]
+    status: active
+
+  - node_id: beneficiary.verify
+    parent_id: beneficiaries
+    node_type: feature
+    display_name: Beneficiary verification
+    description: Beneficiary verification, OTP and cooling-off period.
+    synonyms: [beneficiary verification, verify beneficiary, cooling off, verification pending]
+    status: active
+
+  - node_id: beneficiary.edit
+    parent_id: beneficiaries
+    node_type: feature
+    display_name: Edit beneficiary
+    description: Edit beneficiary details.
+    synonyms: [edit beneficiary, update payee, change beneficiary]
+    status: active
+
+  - node_id: beneficiary.delete
+    parent_id: beneficiaries
+    node_type: feature
+    display_name: Delete beneficiary
+    description: Remove a beneficiary.
+    synonyms: [delete beneficiary, remove payee]
+    status: active
+
+  - node_id: beneficiary.select
+    parent_id: beneficiaries
+    node_type: feature
+    display_name: Select beneficiary
+    description: Select a saved beneficiary during payment.
+    synonyms: [select beneficiary, choose payee, saved beneficiaries]
+    status: active
+
+  - node_id: accounts
+    parent_id: null
+    node_type: module
+    display_name: Accounts
+    description: Account overview, balance, transaction history and details.
+    synonyms: [account, accounts, balance, transaction history, statement]
+    status: active
+
+  - node_id: accounts.overview
+    parent_id: accounts
+    node_type: feature
+    display_name: Account overview
+    description: Home account summary and dashboard.
+    synonyms: [account overview, account summary, dashboard, recent transactions]
+    status: active
+
+  - node_id: accounts.balance
+    parent_id: accounts
+    node_type: feature
+    display_name: Balance enquiry
+    description: Available and current balance.
+    synonyms: [balance, available balance, account balance, balance refresh]
+    status: active
+
+  - node_id: accounts.history
+    parent_id: accounts
+    node_type: feature
+    display_name: Transaction history
+    description: Transaction list, descriptions and search.
+    synonyms: [transaction history, recent transactions, transaction list, merchant description]
+    status: active
+
+  - node_id: accounts.details
+    parent_id: accounts
+    node_type: feature
+    display_name: Account details
+    description: Account number, IFSC and account information.
+    synonyms: [account details, account information, account number, ifsc]
+    status: active
+
+  - node_id: statements
+    parent_id: null
+    node_type: module
+    display_name: Statements
+    description: Statement date range, generation, download and sharing.
+    synonyms: [statement, account statement, pdf statement, bank statement]
+    status: active
+
+  - node_id: statements.range
+    parent_id: statements
+    node_type: feature
+    display_name: Statement date range
+    description: Select a custom period for a statement.
+    synonyms: [date range, previous financial year, statement period, custom range]
+    status: active
+
+  - node_id: statements.generate
+    parent_id: statements
+    node_type: feature
+    display_name: Statement generation
+    description: Generate a readable account statement.
+    synonyms: [generate statement, statement generation, statement error]
+    status: active
+
+  - node_id: statements.download
+    parent_id: statements
+    node_type: feature
+    display_name: Statement download
+    description: Download a statement PDF.
+    synonyms: [download statement, statement download, blank pdf, pdf]
+    status: active
+
+  - node_id: statements.share
+    parent_id: statements
+    node_type: feature
+    display_name: Statement sharing
+    description: Share or email a statement.
+    synonyms: [share statement, email statement, send statement]
+    status: active
+
+  - node_id: cards
+    parent_id: null
+    node_type: module
+    display_name: Cards
+    description: Card controls, limits, blocking, replacement and usage.
+    synonyms: [card, debit card, credit card, card controls]
+    status: active
+
+  - node_id: cards.controls
+    parent_id: cards
+    node_type: feature
+    display_name: Card controls
+    description: Toggle card settings and controls.
+    synonyms: [card controls, card settings, toggle, online usage, international usage]
+    status: active
+
+  - node_id: cards.limits
+    parent_id: cards
+    node_type: feature
+    display_name: Card limits
+    description: ATM, online and transaction limits.
+    synonyms: [atm limit, withdrawal limit, card limit, transaction limit, payment limit]
+    status: active
+
+  - node_id: cards.block
+    parent_id: cards
+    node_type: feature
+    display_name: Block and unblock card
+    description: Temporarily or permanently block a card.
+    synonyms: [block card, unblock card, lost card, report card lost, freeze card]
+    status: active
+
+  - node_id: cards.replacement
+    parent_id: cards
+    node_type: feature
+    display_name: Card replacement
+    description: Replacement card request and tracking.
+    synonyms: [replacement card, replace card, card delivery, card tracking]
+    status: active
+
+  - node_id: cards.online
+    parent_id: cards
+    node_type: feature
+    display_name: Online card usage
+    description: Online and e-commerce card usage.
+    synonyms: [online payment, online usage, ecommerce, card payment]
+    status: active
+
+  - node_id: cards.international
+    parent_id: cards
+    node_type: feature
+    display_name: International card usage
+    description: International and foreign-currency usage.
+    synonyms: [international usage, overseas, foreign transaction]
+    status: active
+
+  - node_id: cards.usage
+    parent_id: cards
+    node_type: feature
+    display_name: Card transactions
+    description: Card payment outcomes and declines.
+    synonyms: [card payment, card transaction, declined, card declined, merchant]
+    status: active
+
+  - node_id: deposits
+    parent_id: null
+    node_type: module
+    display_name: Deposits
+    description: Fixed deposit booking, maturity, renewal, closure and advice.
+    synonyms: [deposit, fixed deposit, fd, term deposit]
+    status: active
+
+  - node_id: deposits.booking
+    parent_id: deposits
+    node_type: feature
+    display_name: Fixed deposit booking
+    description: Book a fixed deposit and review the rate.
+    synonyms: [book deposit, fixed deposit booking, interest rate, book fd]
+    status: active
+
+  - node_id: deposits.maturity
+    parent_id: deposits
+    node_type: feature
+    display_name: Deposit maturity
+    description: Maturity date, value and renewal.
+    synonyms: [maturity, maturity date, maturity value, renewal, interest paid]
+    status: active
+
+  - node_id: deposits.renewal
+    parent_id: deposits
+    node_type: feature
+    display_name: Deposit renewal
+    description: Renew or auto-renew a deposit.
+    synonyms: [renew deposit, auto renewal, deposit renewal]
+    status: active
+
+  - node_id: deposits.premature_closure
+    parent_id: deposits
+    node_type: feature
+    display_name: Premature closure
+    description: Close a deposit before maturity and understand penalties.
+    synonyms: [premature closure, close deposit, penalty, early closure]
+    status: active
+
+  - node_id: deposits.advice
+    parent_id: deposits
+    node_type: feature
+    display_name: Deposit advice
+    description: Deposit advice and statements.
+    synonyms: [deposit advice, deposit certificate, deposit statement]
+    status: active
+
+  - node_id: loans
+    parent_id: null
+    node_type: module
+    display_name: Loans
+    description: Loan eligibility, application, documents, status, EMI and repayment.
+    synonyms: [loan, loans, emi, borrowing, credit]
+    status: active
+
+  - node_id: loans.eligibility
+    parent_id: loans
+    node_type: feature
+    display_name: Loan eligibility
+    description: Eligibility checks and pre-approved offers.
+    synonyms: [loan eligibility, eligible, pre approved, loan offer]
+    status: active
+
+  - node_id: loans.application
+    parent_id: loans
+    node_type: feature
+    display_name: Loan application
+    description: Apply for a loan and complete the form.
+    synonyms: [loan application, apply loan, loan form, application form]
+    status: active
+
+  - node_id: loans.documents
+    parent_id: loans
+    node_type: feature
+    display_name: Loan documents
+    description: Upload loan documents.
+    synonyms: [loan document, upload document, salary slip, loan proof]
+    status: active
+
+  - node_id: loans.status
+    parent_id: loans
+    node_type: feature
+    display_name: Loan status
+    description: Track loan application status.
+    synonyms: [loan status, application status, loan approval, loan tracking]
+    status: active
+
+  - node_id: loans.emi
+    parent_id: loans
+    node_type: feature
+    display_name: EMI and repayment
+    description: EMI amount, schedule and repayment.
+    synonyms: [emi, emi amount, repayment, emi schedule, instalment]
+    status: active
+
+  - node_id: onboarding
+    parent_id: null
+    node_type: module
+    display_name: Onboarding and KYC
+    description: Identity documents, selfie, video KYC and address verification.
+    synonyms: [onboarding, kyc, verify identity, account opening, digital onboarding]
+    status: active
+
+  - node_id: onboarding.kyc
+    parent_id: onboarding
+    node_type: feature
+    display_name: KYC verification
+    description: Know Your Customer verification status and timing.
+    synonyms: [kyc, kyc verification, identity verification, verification status]
+    status: active
+
+  - node_id: onboarding.documents
+    parent_id: onboarding
+    node_type: feature
+    display_name: Identity documents
+    description: Upload identity and address documents.
+    synonyms: [document upload, address proof, id proof, upload document, document verification]
+    status: active
+
+  - node_id: onboarding.selfie
+    parent_id: onboarding
+    node_type: feature
+    display_name: Selfie verification
+    description: Selfie capture for identity verification.
+    synonyms: [selfie, face verification, take photo]
+    status: active
+
+  - node_id: onboarding.video_kyc
+    parent_id: onboarding
+    node_type: feature
+    display_name: Video KYC
+    description: Video KYC call and verification.
+    synonyms: [video kyc, video call, agent verification]
+    status: active
+
+  - node_id: onboarding.address
+    parent_id: onboarding
+    node_type: feature
+    display_name: Address verification
+    description: Address proof and verification.
+    synonyms: [address verification, address proof, address update]
+    status: active
+
+  - node_id: support
+    parent_id: null
+    node_type: module
+    display_name: Support and disputes
+    description: Complaint creation, tracking, chat/call support and disputes.
+    synonyms: [support, customer support, complaint, dispute, help]
+    status: active
+
+  - node_id: support.complaint
+    parent_id: support
+    node_type: feature
+    display_name: Complaint creation
+    description: Raise a complaint or dispute.
+    synonyms: [raise complaint, complaint, report issue, dispute]
+    status: active
+
+  - node_id: support.tracking
+    parent_id: support
+    node_type: feature
+    display_name: Complaint tracking
+    description: Track complaint reference and response.
+    synonyms: [complaint tracking, reference number, complaint status, no update]
+    status: active
+
+  - node_id: support.chat
+    parent_id: support
+    node_type: feature
+    display_name: Chat support
+    description: In-app chat and chatbot support.
+    synonyms: [chat, chatbot, chat support, agent, connect agent]
+    status: active
+
+  - node_id: support.call
+    parent_id: support
+    node_type: feature
+    display_name: Call support
+    description: Phone support and call-back.
+    synonyms: [call support, phone support, call back, helpline]
+    status: active
+
+  - node_id: support.dispute
+    parent_id: support
+    node_type: feature
+    display_name: Transaction dispute
+    description: Dispute a transaction and resolution.
+    synonyms: [transaction dispute, dispute transaction, disputed charge]
+    status: active
+
+  - node_id: notifications
+    parent_id: null
+    node_type: module
+    display_name: Notifications
+    description: Push, SMS and email alerts and preferences.
+    synonyms: [notification, alert, sms, push notification, email alert]
+    status: active
+
+  - node_id: notifications.push
+    parent_id: notifications
+    node_type: feature
+    display_name: Push notifications
+    description: In-app push alerts.
+    synonyms: [push notification, push alert, app notification]
+    status: active
+
+  - node_id: notifications.sms
+    parent_id: notifications
+    node_type: feature
+    display_name: SMS alerts
+    description: SMS transaction alerts.
+    synonyms: [sms, text message, sms alert, transaction alert]
+    status: active
+
+  - node_id: notifications.email
+    parent_id: notifications
+    node_type: feature
+    display_name: Email alerts
+    description: Email notifications and statements.
+    synonyms: [email alert, email notification, email statement]
+    status: active
+
+  - node_id: notifications.preferences
+    parent_id: notifications
+    node_type: feature
+    display_name: Notification preferences
+    description: Manage alert preferences.
+    synonyms: [notification preference, alert settings, mute alerts, notification settings]
+    status: active
+
+  - node_id: navigation
+    parent_id: null
+    node_type: module
+    display_name: Navigation and performance
+    description: Search, home screen, application stability and loading.
+    synonyms: [navigation, app, home screen, performance, search]
+    status: active
+
+  - node_id: navigation.search
+    parent_id: navigation
+    node_type: feature
+    display_name: Search and find features
+    description: Search and discover app features.
+    synonyms: [search, find feature, menu, locate option, discover]
+    status: active
+
+  - node_id: navigation.home
+    parent_id: navigation
+    node_type: feature
+    display_name: Home screen
+    description: Home screen layout, back navigation and labels.
+    synonyms: [home screen, back button, dashboard, menu labels, home]
+    status: active
+
+  - node_id: navigation.stability
+    parent_id: navigation
+    node_type: feature
+    display_name: App stability
+    description: Crashes, freezes and unresponsive screens.
+    synonyms: [crash, freeze, frozen, unresponsive, app closes]
+    status: active
+
+  - node_id: navigation.performance
+    parent_id: navigation
+    node_type: feature
+    display_name: Loading and performance
+    description: Slow loading, blank screens and responsiveness.
+    synonyms: [slow, loading, blank screen, takes too long, performance, responsive]
+    status: active
+
+  - node_id: navigation.labels
+    parent_id: navigation
+    node_type: feature
+    display_name: Labels and clarity
+    description: Labels, wording and clarity of navigation.
+    synonyms: [labels, wording, unclear, confusing, clarity]
+    status: active

@@ -1,0 +1,9 @@
+{
+  "uri": "local://backlogs/uploads/demo-bank/UP-ceadb2f0947d/sample_backlog_upload.csv",
+  "key": "backlogs/uploads/demo-bank/UP-ceadb2f0947d/sample_backlog_upload.csv",
+  "generation": "fada2455c48548678e4e2202",
+  "size_bytes": 1922,
+  "sha256": "fada2455c48548678e4e2202289407d0ff27b07afb3906fa088cb24f3587b336",
+  "uploaded_at": "2026-10-30T10:35:56.697599+00:00",
+  "content_type": "text/csv"
+}
