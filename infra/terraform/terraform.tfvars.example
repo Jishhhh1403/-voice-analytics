@@ -1,0 +1,13 @@
+project_id           = "<PROJECT_ID>"
+region               = "us-central1"
+name_prefix          = "bci"
+feedback_bucket_name = "<FEEDBACK_BUCKET>"
+bigquery_location    = "US"
+artifact_repository  = "bci"
+
+# Set these after the first image push (or let Cloud Build deploy the services).
+backend_image  = ""
+frontend_image = ""
+worker_image   = ""
+
+gemini_secret_name = "bci-gemini-api-key"

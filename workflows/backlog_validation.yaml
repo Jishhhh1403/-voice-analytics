@@ -1,0 +1,87 @@
+# Cloud Workflows definition for backlog validation.
+#
+# Input example:
+#   {"region": "us-central1", "worker_job": "bci-worker",
+#    "upload_id": "UP-...", "validation_run_id": "VRUN-..."}
+#
+# As with the feedback workflow, the PoV worker executes Modules F-G in one
+# job. The two stage calls below preserve the orchestration contract so the
+# jobs can be split once validation state moves to BigQuery.
+
+main:
+  params: [input]
+  steps:
+    - init:
+        assign:
+          - project: ${sys.get_env("GOOGLE_CLOUD_PROJECT")}
+          - region: ${input.region}
+          - workerJob: ${input.worker_job}
+          - uploadId: ${input.upload_id}
+          - validationRunId: ${input.validation_run_id}
+          - stages:
+              - module_f_normalise
+              - module_g_validate
+    - run_stages:
+        for:
+          value: stage
+          in: ${stages}
+        call: run_backlog_stage
+        args:
+          project: ${project}
+          region: ${region}
+          workerJob: ${workerJob}
+          stage: ${stage}
+          uploadId: ${uploadId}
+          validationRunId: ${validationRunId}
+        result: stageResult
+    - success:
+        return:
+          validation_run_id: ${validationRunId}
+          status: "completed"
+          stages: ${stages}
+
+run_backlog_stage:
+  params: [project, region, workerJob, stage, uploadId, validationRunId]
+  steps:
+    - launch:
+        call: googleapis.run.v1.namespaces.jobs.run
+        args:
+          name: ${"projects/" + project + "/locations/" + region + "/namespaces/" + project + "/jobs/" + workerJob}
+          body:
+            overrides:
+              containerOverrides:
+                - args:
+                    - "--mode"
+                    - "backlog"
+                    - "--stage"
+                    - ${stage}
+                    - "--upload-id"
+                    - ${uploadId}
+                    - "--validation-run-id"
+                    - ${validationRunId}
+                  env:
+                    - name: STAGE
+                      value: ${stage}
+                    - name: VALIDATION_RUN_ID
+                      value: ${validationRunId}
+        result: operation
+    - poll:
+        call: googleapis.run.v1.namespaces.operations.get
+        args:
+          name: ${operation.name}
+        result: operationStatus
+    - check:
+        switch:
+          - condition: ${operationStatus.done == true}
+            next: completed
+        next: wait
+    - wait:
+        call: sys.sleep
+        args: [5]
+        next: poll
+    - completed:
+        switch:
+          - condition: ${operationStatus.error != null}
+            raise: ${operationStatus.error}
+    - return_operation:
+        return: ${operationStatus}

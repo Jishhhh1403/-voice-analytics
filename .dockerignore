@@ -14,7 +14,6 @@ frontend/dist
 docs
 tests
 infra
-pipelines
 scripts
 sql
 workflows

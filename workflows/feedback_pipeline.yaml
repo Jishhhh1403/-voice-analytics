@@ -1,0 +1,96 @@
+# Cloud Workflows definition for the feedback pipeline.
+#
+# Run it with an input document like:
+#   {"region": "us-central1", "worker_job": "bci-worker", "run_id": "RUN-...",
+#    "input_uri": "gs://<FEEDBACK_BUCKET>/feedback/source/feedback.csv",
+#    "generation": "1234567890"}
+#
+# The PoV worker currently executes the full idempotent pipeline on the first
+# stage and reuses the completed run on later stages. Stage boundaries are
+# persisted in ops.pipeline_stages; splitting each stage into a separate
+# BigQuery-backed job is tracked in docs/gcp-migration.md.
+
+main:
+  params: [input]
+  steps:
+    - init:
+        assign:
+          - project: ${sys.get_env("GOOGLE_CLOUD_PROJECT")}
+          - region: ${input.region}
+          - workerJob: ${input.worker_job}
+          - runId: ${input.run_id}
+          - inputUri: ${input.input_uri}
+          - generation: ${input.generation}
+          - stages:
+              - validate_source
+              - module_a_ingest
+              - module_b_extract
+              - module_c_discover
+              - module_d_map
+              - module_e_publish
+              - mark_run_complete
+    - run_stages:
+        for:
+          value: stage
+          in: ${stages}
+        call: run_feedback_stage
+        args:
+          project: ${project}
+          region: ${region}
+          workerJob: ${workerJob}
+          stage: ${stage}
+          runId: ${runId}
+          inputUri: ${inputUri}
+          generation: ${generation}
+        result: stageResult
+    - success:
+        return:
+          run_id: ${runId}
+          status: "completed"
+          stages: ${stages}
+
+run_feedback_stage:
+  params: [project, region, workerJob, stage, runId, inputUri, generation]
+  steps:
+    - launch:
+        call: googleapis.run.v1.namespaces.jobs.run
+        args:
+          name: ${"projects/" + project + "/locations/" + region + "/namespaces/" + project + "/jobs/" + workerJob}
+          body:
+            overrides:
+              containerOverrides:
+                - args:
+                    - "--mode"
+                    - "feedback"
+                    - "--stage"
+                    - ${stage}
+                    - "--input-uri"
+                    - ${inputUri}
+                    - "--generation"
+                    - ${generation}
+                  env:
+                    - name: STAGE
+                      value: ${stage}
+                    - name: RUN_ID
+                      value: ${runId}
+        result: operation
+    - poll:
+        call: googleapis.run.v1.namespaces.operations.get
+        args:
+          name: ${operation.name}
+        result: operationStatus
+    - check:
+        switch:
+          - condition: ${operationStatus.done == true}
+            next: completed
+        next: wait
+    - wait:
+        call: sys.sleep
+        args: [5]
+        next: poll
+    - completed:
+        switch:
+          - condition: ${operationStatus.error != null}
+            raise: ${operationStatus.error}
+    - return_operation:
+        return: ${operationStatus}

@@ -1,0 +1,141 @@
+# Cloud Build pipeline: test, build, push and deploy.
+# Provision infrastructure first with Terraform (infra/terraform), then submit:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_AR_REPO=bci,_PREFIX=bci,_FEEDBACK_BUCKET=<FEEDBACK_BUCKET>
+#
+# The backend currently uses SQLite. Cloud Run local disk is ephemeral, so this
+# deployment is a runtime smoke target until the BigQuery repository adapter is
+# implemented. See docs/gcp-migration.md.
+
+substitutions:
+  _REGION: us-central1
+  _AR_REPO: bci
+  _PREFIX: bci
+  _FEEDBACK_BUCKET: ""
+  _TAG: latest
+
+steps:
+  - id: test-backend
+    name: python:3.13-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        pip install --no-cache-dir -r backend/requirements-dev.txt
+        PYTHONPATH=backend python -m pytest -q
+
+  - id: build-frontend
+    name: node:20
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        cd frontend
+        npm ci
+        npm run build
+
+  - id: build-backend-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/bci-backend:${_TAG}
+      - -f
+      - docker/Dockerfile.backend
+      - .
+
+  - id: build-frontend-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/bci-frontend:${_TAG}
+      - -f
+      - docker/Dockerfile.frontend
+      - .
+
+  - id: build-worker-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/bci-worker:${_TAG}
+      - -f
+      - docker/Dockerfile.worker
+      - .
+
+  - id: push-images
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/bci-backend:${_TAG}
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/bci-frontend:${_TAG}
+        docker push ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/bci-worker:${_TAG}
+
+  - id: deploy-backend
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gcloud run deploy ${_PREFIX}-backend \
+          --image ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/bci-backend:${_TAG} \
+          --region ${_REGION} \
+          --platform managed \
+          --allow-unauthenticated \
+          --service-account ${_PREFIX}-backend@$PROJECT_ID.iam.gserviceaccount.com \
+          --set-env-vars ENVIRONMENT=gcp,OBJECT_STORE=gcs,GCS_BUCKET=${_FEEDBACK_BUCKET},DATA_DIR=/tmp/bci,AUTO_SEED_SOURCE=false,AUTO_RUN_SAMPLE=false,EXTRACTION_PROVIDER=rules,EMBEDDING_PROVIDER=local \
+          --port 8000
+        gcloud run services describe ${_PREFIX}-backend \
+          --region ${_REGION} \
+          --format 'value(status.url)' > /workspace/backend_url
+
+  - id: deploy-worker-job
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gcloud run jobs deploy ${_PREFIX}-worker \
+          --image ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/bci-worker:${_TAG} \
+          --region ${_REGION} \
+          --service-account ${_PREFIX}-worker@$PROJECT_ID.iam.gserviceaccount.com \
+          --set-env-vars ENVIRONMENT=gcp,OBJECT_STORE=gcs,GCS_BUCKET=${_FEEDBACK_BUCKET},EXTRACTION_PROVIDER=rules,EMBEDDING_PROVIDER=local \
+          --task-timeout 3600s
+
+  - id: deploy-frontend
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        BACKEND_URL="$$(cat /workspace/backend_url)"
+        gcloud run deploy ${_PREFIX}-frontend \
+          --image ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/bci-frontend:${_TAG} \
+          --region ${_REGION} \
+          --platform managed \
+          --allow-unauthenticated \
+          --service-account ${_PREFIX}-backend@$PROJECT_ID.iam.gserviceaccount.com \
+          --set-env-vars BACKEND_URL="$${BACKEND_URL}" \
+          --port 80
+
+  - id: deploy-workflows
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gcloud workflows deploy ${_PREFIX}-feedback-pipeline \
+          --source workflows/feedback_pipeline.yaml \
+          --location ${_REGION} \
+          --service-account ${_PREFIX}-workflows@$PROJECT_ID.iam.gserviceaccount.com
+        gcloud workflows deploy ${_PREFIX}-backlog-validation \
+          --source workflows/backlog_validation.yaml \
+          --location ${_REGION} \
+          --service-account ${_PREFIX}-workflows@$PROJECT_ID.iam.gserviceaccount.com
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
