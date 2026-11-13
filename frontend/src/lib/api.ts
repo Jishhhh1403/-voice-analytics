@@ -97,17 +97,23 @@ export function coefficientMatrixDownloadPath(runId: string): string {
   return `/problem-dimensions/runs/${runId}/coefficients.csv`;
 }
 
+export function narrativeSerializationPath(runId: string): string {
+  return `/problem-dimensions/runs/${runId}/narrative-serialization`;
+}
+
+export function generateNarrativeSerialization(runId: string) {
+  return api(narrativeSerializationPath(runId), { method: "POST" });
+}
+
 export function startPortfolioRun(payload: {
   feedback_run_id?: string | null;
   dimension_run_id?: string | null;
-  mds_id?: string | null;
   force_rerun?: boolean;
   generate_narrative?: boolean;
 }): Promise<{ run_id: string; status: string; stage?: string | null }> {
   return postJSON("/problem-portfolio/runs?background=true", {
     feedback_run_id: payload.feedback_run_id ?? null,
     dimension_run_id: payload.dimension_run_id ?? null,
-    mds_id: payload.mds_id ?? null,
     force_rerun: Boolean(payload.force_rerun),
     generate_narrative: payload.generate_narrative !== false,
   });

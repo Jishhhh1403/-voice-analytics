@@ -34,7 +34,7 @@ const navigation = [
   { to: "/problems", label: "Customer problems", icon: ShieldAlert },
   { to: "/themes", label: "Theme map", icon: Network },
   { to: "/dimensions", label: "Factor analysis", icon: Layers3 },
-  { to: "/portfolio", label: "Portfolio narrative", icon: BrainCircuit },
+  { to: "/portfolio", label: "Narrative serialization", icon: BrainCircuit },
   { to: "/backlog", label: "Backlog validation", icon: UploadCloud },
 ];
 

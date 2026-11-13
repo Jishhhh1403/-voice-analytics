@@ -65,7 +65,6 @@ def _valid_narrative() -> PortfolioNarrative:
         ],
         methodology_notes=[
             "Portfolio themes come from an approved factor nomenclature.",
-            "MDS coordinates provide relative positioning only and have no business axis meaning.",
         ],
     )
 
@@ -83,15 +82,13 @@ class FakeNarrativeProvider:
         return self.narrative
 
 
-def test_serialization_preserves_missing_values_and_uses_euclidean_distances(portfolio_client):
+def test_serialization_preserves_missing_values_without_mds(portfolio_client):
     _, app, feedback_run_id, dimension_run_id = portfolio_client
 
     payload = build_portfolio_serialization(
         app.state.repo,
         feedback_run_id,
         dimension_run_id,
-        mds_id="MDS-PORTFOLIO-TEST",
-        neighbor_limit=8,
     )
 
     assert payload["source"]["counts"]["problems_in_run"] == 3
@@ -103,15 +100,10 @@ def test_serialization_preserves_missing_values_and_uses_euclidean_distances(por
     missing = problem["measurements"]["assessment_velocity_delta"]
     assert missing["value"] is None
     assert missing["status"] == "NO_DATA"
-
-    relationship = next(
-        item
-        for item in payload["mds_relationships"]
-        if item["problem_id"] == "PRB-001" and item["neighbor_problem_id"] == "PRB-002"
-    )
-    assert relationship["euclidean_distance"] == 5.0
-    assert relationship["distance_space"] == "raw_mds_coordinates"
-    assert payload["source"]["portfolio_distance_metric"] == "euclidean"
+    assert "mds" not in problem
+    assert "mds_neighbors" not in problem
+    assert "mds_relationships" not in payload
+    assert not any(key.startswith("mds_") for key in payload["source"])
     assert payload["interpretation_constraints"]
 
 
@@ -121,7 +113,6 @@ def test_validation_rejects_technical_ids_and_causal_language(portfolio_client):
         app.state.repo,
         feedback_run_id,
         dimension_run_id,
-        mds_id="MDS-PORTFOLIO-TEST",
     )
 
     valid = validate_portfolio_narrative(_valid_narrative(), serialization)
@@ -144,7 +135,6 @@ def test_portfolio_run_generates_serialization_narrative_and_validation(portfoli
         json={
             "feedback_run_id": feedback_run_id,
             "dimension_run_id": dimension_run_id,
-            "mds_id": "MDS-PORTFOLIO-TEST",
             "force_rerun": True,
             "generate_narrative": True,
         },
@@ -194,7 +184,6 @@ def test_portfolio_run_without_provider_keeps_serialization_available(portfolio_
         json={
             "feedback_run_id": feedback_run_id,
             "dimension_run_id": dimension_run_id,
-            "mds_id": "MDS-PORTFOLIO-TEST",
             "force_rerun": True,
             "generate_narrative": True,
         },
@@ -214,13 +203,12 @@ def test_narrative_context_is_bounded_but_indexes_every_problem(portfolio_client
         app.state.repo,
         feedback_run_id,
         dimension_run_id,
-        mds_id="MDS-PORTFOLIO-TEST",
     )
 
-    context = build_narrative_context(serialization, max_problems=2, max_neighbors=1)
+    context = build_narrative_context(serialization, max_problems=2)
 
     assert context["context_scope"]["full_serialization_retained"] is True
     assert len(context["problems"]) == 2
     assert len(context["problem_index"]) == 3
     assert len(context["factor_nomenclature"]) == 2
-    assert all(len(problem["mds_neighbors"]) <= 1 for problem in context["problems"])
+    assert all("mds_neighbors" not in problem for problem in context["problems"])

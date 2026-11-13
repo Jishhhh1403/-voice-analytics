@@ -32,7 +32,6 @@ def start_portfolio_run(
         run_id = service.start(
             feedback_run_id=payload.feedback_run_id,
             dimension_run_id=payload.dimension_run_id,
-            mds_id=payload.mds_id,
             force_rerun=payload.force_rerun,
             generate_narrative=payload.generate_narrative,
             run_in_thread=background,

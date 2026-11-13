@@ -200,6 +200,8 @@ def app_client(tmp_path_factory: pytest.TempPathFactory):
         extraction_provider="rules",
         embedding_provider="local",
         cors_origins="http://testserver",
+        gemini_api_key="",
+        problem_dimension_llm_enabled=False,
     )
     app = create_app(settings)
     with TestClient(app) as client:

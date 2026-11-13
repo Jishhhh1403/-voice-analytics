@@ -45,7 +45,7 @@ class Settings(BaseSettings):
 
     extraction_provider: str = "rules"
     llm_model: str = "gemini-2.0-flash"
-    gemini_model: str = "gemini-3.8-flash"
+    gemini_model: str = "gemini-3.5-flash-lite"
     llm_timeout_seconds: int = 45
     llm_batch_size: int = 8
     gemini_api_key: str = ""
@@ -120,6 +120,29 @@ class Settings(BaseSettings):
     problem_dimension_supplementary_features: str = ""
     problem_dimension_excluded_features: str = ""
     problem_dimension_include_missing_indicators: bool = False
+    problem_dimension_llm_enabled: bool = True
+    problem_dimension_llm_provider: str = "gemini"
+    problem_dimension_llm_fallback_provider: str = ""
+    problem_dimension_llm_base_url: str = ""
+    problem_dimension_llm_api_key: str = ""
+    problem_dimension_llm_model: str = ""
+    problem_dimension_llm_temperature: float = 0.1
+    problem_dimension_llm_max_output_tokens: int = 8192
+    problem_dimension_llm_timeout_seconds: int = 180
+    problem_dimension_llm_max_attempts: int = 3
+    problem_dimension_llm_batch_size: int = 6
+    problem_dimension_llm_cross_review: bool = True
+    problem_dimension_llm_context_observations: int = 40
+    problem_dimension_factor_nomenclature_prompt_version: str = "dimension-factor-equation-nomenclature-1.0.0"
+    problem_dimension_factor_narrative_prompt_version: str = "dimension-factor-narrative-1.1.0"
+    problem_dimension_factor_narrative_model_fallbacks: str = "gemini-3.1-flash-lite"
+    problem_dimension_factor_narrative_max_output_tokens: int = 16384
+    problem_dimension_factor_narrative_timeout_seconds: int = 600
+    problem_dimension_factor_narrative_retry_attempts: int = 2
+    problem_dimension_interpretation_prompt_version: str = "dimension-problem-interpretation-1.0.0"
+    problem_dimension_aggregation_prompt_version: str = "dimension-evidence-aggregation-1.0.0"
+    problem_dimension_nomenclature_prompt_version: str = "dimension-nomenclature-1.0.0"
+    problem_dimension_cross_review_prompt_version: str = "dimension-cross-review-1.0.0"
     enable_problem_dimension_efa: bool = False
     enable_measurement_engine: bool = True
     priority_weight_customer_impact: float = 0.30
@@ -141,7 +164,6 @@ class Settings(BaseSettings):
     portfolio_narrative_temperature: float = 0.2
     portfolio_narrative_max_output_tokens: int = 8192
     portfolio_narrative_timeout_seconds: int = 180
-    portfolio_mds_neighbors: int = 5
     portfolio_max_problems: int = 1000
     portfolio_require_approved_factors: bool = True
 

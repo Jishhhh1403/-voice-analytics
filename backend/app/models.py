@@ -96,10 +96,13 @@ class DimensionPublishRequest(BaseModel):
     note: str = Field(default="", max_length=2000)
 
 
+class DimensionRegenerateRequest(BaseModel):
+    force: bool = True
+
+
 class PortfolioRunRequest(BaseModel):
     feedback_run_id: str | None = Field(default=None, description="Completed feedback run to analyse")
     dimension_run_id: str | None = Field(default=None, description="Approved or published factor run")
-    mds_id: str | None = Field(default=None, description="Optional MDS snapshot; defaults to the latest OK snapshot")
     force_rerun: bool = False
     generate_narrative: bool = True
 

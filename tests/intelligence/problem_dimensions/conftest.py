@@ -145,6 +145,8 @@ def build_dimension_app(tmp_path: Path):
         embedding_provider="local",
         cors_origins="http://testserver",
         problem_dimension_require_review=True,
+        gemini_api_key="",
+        problem_dimension_llm_enabled=False,
     )
     app = create_app(settings)
     run_id = seed_problem_dimensions(app.state.repo)

@@ -11,6 +11,7 @@ from fastapi.responses import Response
 
 from ..models import (
     DimensionPublishRequest,
+    DimensionRegenerateRequest,
     DimensionReviewRequest,
     ProblemDimensionRunRequest,
 )
@@ -86,6 +87,67 @@ def get_run_problem_dimensions(run_id: str, problem_id: str, request: Request) -
         return _service(request).problem_payload(problem_id, run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Dimension run or problem not found") from exc
+
+
+@router.get("/runs/{run_id}/interpretation")
+def get_interpretation_status(run_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return _service(request).interpretation_status(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Dimension run not found") from exc
+
+
+@router.get("/runs/{run_id}/dimensions/{dimension_id}/interpretation")
+def get_dimension_interpretation(run_id: str, dimension_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return _service(request).interpretation_detail(run_id, dimension_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Dimension run or interpretation not found") from exc
+
+
+@router.post("/runs/{run_id}/interpretation/regenerate")
+def regenerate_interpretation(
+    run_id: str,
+    payload: DimensionRegenerateRequest,
+    request: Request,
+) -> dict[str, Any]:
+    try:
+        return _service(request).regenerate_interpretations(run_id, force=payload.force)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Dimension run not found") from exc
+
+
+@router.post("/runs/{run_id}/problems/{problem_id}/name-factors")
+def name_factors_for_problem(
+    run_id: str,
+    problem_id: str,
+    payload: DimensionRegenerateRequest,
+    request: Request,
+) -> dict[str, Any]:
+    try:
+        return _service(request).name_factors_for_problem(
+            run_id,
+            problem_id,
+            force=payload.force,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Dimension run or problem not found") from exc
+
+
+@router.get("/runs/{run_id}/narrative-serialization")
+def get_narrative_serialization(run_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return _service(request).narrative_serialization(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Dimension run not found") from exc
+
+
+@router.post("/runs/{run_id}/narrative-serialization")
+def generate_narrative_serialization(run_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return _service(request).generate_narrative_serialization(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Dimension run not found") from exc
 
 
 @router.get("/runs/{run_id}/coefficients")

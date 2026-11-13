@@ -1623,8 +1623,12 @@ class Repository:
             conn.executemany(
                 "INSERT INTO dimension_definitions (run_id, dimension_id, dimension_number, analyst_name, "
                 "proposed_label, description, business_interpretation, interpretation_status, model_version, "
-                "top_variables_json, representative_problem_ids_json, review_status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "top_variables_json, representative_problem_ids_json, review_status, nomenclature_source, "
+                "prompt_version, model_name, llm_analysis_run_id, taxonomy_version, generated_at, short_name, "
+                "banking_domain, journey_scope, core_customer_experience, supporting_variables_json, "
+                "supporting_categories_json, contradictory_problem_ids_json, distinguishing_characteristics, "
+                "nomenclature_status, confidence, confidence_explanation) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         run_id,
@@ -1639,6 +1643,23 @@ class Repository:
                         dumps(item.get("top_variables")),
                         dumps(item.get("representative_problem_ids")),
                         item.get("review_status", "DRAFT"),
+                        item.get("nomenclature_source"),
+                        item.get("prompt_version"),
+                        item.get("model_name"),
+                        item.get("llm_analysis_run_id"),
+                        item.get("taxonomy_version"),
+                        item.get("generated_at"),
+                        item.get("short_name"),
+                        item.get("banking_domain"),
+                        item.get("journey_scope"),
+                        item.get("core_customer_experience"),
+                        dumps(item.get("supporting_variables")),
+                        dumps(item.get("supporting_categories")),
+                        dumps(item.get("contradictory_problem_ids")),
+                        item.get("distinguishing_characteristics"),
+                        item.get("nomenclature_status"),
+                        item.get("confidence"),
+                        item.get("confidence_explanation"),
                     )
                     for item in definitions
                 ],
@@ -1737,6 +1758,9 @@ class Repository:
         for row in rows:
             row["top_variables"] = loads(row.pop("top_variables_json", None), [])
             row["representative_problem_ids"] = loads(row.pop("representative_problem_ids_json", None), [])
+            row["supporting_variables"] = loads(row.pop("supporting_variables_json", None), [])
+            row["supporting_categories"] = loads(row.pop("supporting_categories_json", None), [])
+            row["contradictory_problem_ids"] = loads(row.pop("contradictory_problem_ids_json", None), [])
         return rows
 
     def review_dimension(
@@ -1840,6 +1864,47 @@ class Repository:
             params,
         )
 
+    def save_dimension_narrative_serialization(
+        self,
+        run_id: str,
+        payload: dict[str, Any],
+        *,
+        status: str,
+        prompt_version: str,
+        agent_version: str | None,
+        model_name: str | None,
+        content_hash: str,
+        error: str | None = None,
+    ) -> str:
+        serialization_id = f"NAR-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
+        self.db.insert(
+            "dimension_narrative_serializations",
+            {
+                "serialization_id": serialization_id,
+                "run_id": run_id,
+                "status": status,
+                "prompt_version": prompt_version,
+                "agent_version": agent_version,
+                "model_name": model_name,
+                "content_hash": content_hash,
+                "payload_json": dumps(payload),
+                "error": error,
+                "created_at": now_iso(),
+            },
+        )
+        return serialization_id
+
+    def get_latest_dimension_narrative_serialization(self, run_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT * FROM dimension_narrative_serializations WHERE run_id=? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (run_id,),
+        )
+        if not row:
+            return None
+        row["payload"] = loads(row.pop("payload_json", None), {})
+        return row
+
     def get_dimension_scores(self, run_id: str, dimension_id: str) -> list[dict[str, Any]]:
         rows = self.db.query(
             "SELECT * FROM problem_dimension_scores WHERE run_id=? AND dimension_id=? ORDER BY coordinate DESC",
@@ -1917,6 +1982,264 @@ class Repository:
             params,
         )
 
+    # ------------------------------------------------- LLM factor interpretation
+    def update_dimension_definition(self, run_id: str, dimension_id: str, **fields: Any) -> None:
+        if not fields:
+            return
+        for key in (
+            "top_variables",
+            "representative_problem_ids",
+            "supporting_variables",
+            "supporting_categories",
+            "contradictory_problem_ids",
+        ):
+            if key in fields:
+                fields[f"{key}_json"] = dumps(fields.pop(key))
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        self.db.execute(
+            f"UPDATE dimension_definitions SET {assignments} WHERE run_id=? AND dimension_id=?",
+            [*fields.values(), run_id, dimension_id],
+        )
+
+    def save_problem_interpretation(
+        self,
+        run_id: str,
+        dimension_id: str,
+        problem_id: str,
+        *,
+        status: str,
+        observation: dict[str, Any] | None,
+        prompt_version: str | None,
+        model_name: str | None,
+        error: str | None = None,
+    ) -> None:
+        now = now_iso()
+        self.db.execute(
+            "INSERT INTO dimension_problem_interpretations (run_id, dimension_id, canonical_problem_id, status, "
+            "observation_json, prompt_version, model_name, error, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(run_id, dimension_id, canonical_problem_id) DO UPDATE SET status=excluded.status, "
+            "observation_json=excluded.observation_json, prompt_version=excluded.prompt_version, "
+            "model_name=excluded.model_name, error=excluded.error, updated_at=excluded.updated_at",
+            (
+                run_id,
+                dimension_id,
+                problem_id,
+                status,
+                dumps(observation),
+                prompt_version,
+                model_name,
+                error,
+                now,
+                now,
+            ),
+        )
+
+    def get_problem_interpretations(
+        self,
+        run_id: str,
+        dimension_id: str,
+        *,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = [run_id, dimension_id]
+        where = "run_id=? AND dimension_id=?"
+        if status:
+            where += " AND status=?"
+            params.append(status)
+        rows = self.db.query(
+            f"SELECT * FROM dimension_problem_interpretations WHERE {where} "
+            "ORDER BY canonical_problem_id",
+            params,
+        )
+        for row in rows:
+            row["observation"] = loads(row.pop("observation_json", None), None)
+        return rows
+
+    def save_dimension_aggregation(
+        self,
+        run_id: str,
+        dimension_id: str,
+        *,
+        status: str,
+        aggregation: dict[str, Any] | None,
+        prompt_version: str | None,
+        model_name: str | None,
+        error: str | None = None,
+    ) -> None:
+        now = now_iso()
+        self.db.execute(
+            "INSERT INTO dimension_evidence_aggregations (run_id, dimension_id, status, aggregation_json, "
+            "prompt_version, model_name, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(run_id, dimension_id) DO UPDATE SET status=excluded.status, "
+            "aggregation_json=excluded.aggregation_json, prompt_version=excluded.prompt_version, "
+            "model_name=excluded.model_name, error=excluded.error, updated_at=excluded.updated_at",
+            (run_id, dimension_id, status, dumps(aggregation), prompt_version, model_name, error, now, now),
+        )
+
+    def get_dimension_aggregation(self, run_id: str, dimension_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT * FROM dimension_evidence_aggregations WHERE run_id=? AND dimension_id=?",
+            (run_id, dimension_id),
+        )
+        if not row:
+            return None
+        row["aggregation"] = loads(row.pop("aggregation_json", None), None)
+        return row
+
+    def save_nomenclature_proposal(
+        self,
+        run_id: str,
+        dimension_id: str,
+        factor_id: str,
+        *,
+        status: str,
+        proposal: dict[str, Any] | None,
+        original_proposal: dict[str, Any] | None = None,
+        cross_review: dict[str, Any] | None = None,
+        validation: dict[str, Any] | None = None,
+        prompt_version: str | None,
+        model_name: str | None,
+    ) -> None:
+        now = now_iso()
+        self.db.execute(
+            "INSERT INTO dimension_nomenclature_proposals (run_id, dimension_id, factor_id, status, proposal_json, "
+            "original_proposal_json, cross_review_json, validation_json, prompt_version, model_name, created_at, "
+            "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(run_id, dimension_id) DO UPDATE SET factor_id=excluded.factor_id, status=excluded.status, "
+            "proposal_json=excluded.proposal_json, original_proposal_json=excluded.original_proposal_json, "
+            "cross_review_json=excluded.cross_review_json, validation_json=excluded.validation_json, "
+            "prompt_version=excluded.prompt_version, model_name=excluded.model_name, updated_at=excluded.updated_at",
+            (
+                run_id,
+                dimension_id,
+                factor_id,
+                status,
+                dumps(proposal),
+                dumps(original_proposal if original_proposal is not None else proposal),
+                dumps(cross_review),
+                dumps(validation),
+                prompt_version,
+                model_name,
+                now,
+                now,
+            ),
+        )
+
+    def get_nomenclature_proposals(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM dimension_nomenclature_proposals WHERE run_id=? ORDER BY factor_id",
+            (run_id,),
+        )
+        for row in rows:
+            row["proposal"] = loads(row.pop("proposal_json", None), None)
+            row["original_proposal"] = loads(row.pop("original_proposal_json", None), None)
+            row["cross_review"] = loads(row.pop("cross_review_json", None), None)
+            row["validation"] = loads(row.pop("validation_json", None), None)
+        return rows
+
+    def get_nomenclature_proposal(self, run_id: str, dimension_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT * FROM dimension_nomenclature_proposals WHERE run_id=? AND dimension_id=?",
+            (run_id, dimension_id),
+        )
+        if not row:
+            return None
+        row["proposal"] = loads(row.pop("proposal_json", None), None)
+        row["original_proposal"] = loads(row.pop("original_proposal_json", None), None)
+        row["cross_review"] = loads(row.pop("cross_review_json", None), None)
+        row["validation"] = loads(row.pop("validation_json", None), None)
+        return row
+
+    def update_dimension_llm_processing(self, run_id: str, dimension_id: str, **fields: Any) -> None:
+        now = now_iso()
+        existing = self.db.query_one(
+            "SELECT run_id FROM dimension_llm_processing WHERE run_id=? AND dimension_id=?",
+            (run_id, dimension_id),
+        )
+        if existing:
+            fields["updated_at"] = now
+            assignments = ", ".join(f"{key}=?" for key in fields)
+            self.db.execute(
+                f"UPDATE dimension_llm_processing SET {assignments} WHERE run_id=? AND dimension_id=?",
+                [*fields.values(), run_id, dimension_id],
+            )
+            return
+        values = {
+            "run_id": run_id,
+            "dimension_id": dimension_id,
+            "stage": fields.pop("stage", "QUEUED"),
+            "status": fields.pop("status", "QUEUED"),
+            "total_problems": fields.pop("total_problems", 0),
+            "processed_problems": fields.pop("processed_problems", 0),
+            "failed_problems": fields.pop("failed_problems", 0),
+            "error": fields.pop("error", None),
+            "prompt_version": fields.pop("prompt_version", None),
+            "model_name": fields.pop("model_name", None),
+            "started_at": fields.pop("started_at", None),
+            "completed_at": fields.pop("completed_at", None),
+            "updated_at": now,
+            **fields,
+        }
+        self.db.insert("dimension_llm_processing", values)
+
+    def list_dimension_llm_processing(self, run_id: str) -> list[dict[str, Any]]:
+        return self.db.query(
+            "SELECT * FROM dimension_llm_processing WHERE run_id=? ORDER BY dimension_id",
+            (run_id,),
+        )
+
+    def get_dimension_llm_processing(self, run_id: str, dimension_id: str) -> dict[str, Any] | None:
+        return self.db.query_one(
+            "SELECT * FROM dimension_llm_processing WHERE run_id=? AND dimension_id=?",
+            (run_id, dimension_id),
+        )
+
+    def get_all_problem_scores(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM problem_dimension_scores WHERE run_id=? "
+            "ORDER BY canonical_problem_id, dimension_id",
+            (run_id,),
+        )
+        for row in rows:
+            row["contribution_metadata"] = loads(row.pop("contribution_metadata_json", None), {})
+        return rows
+
+    def get_run_problems(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM customer_problems WHERE run_id=? ORDER BY problem_id",
+            (run_id,),
+        )
+        for row in rows:
+            row["symptoms"] = loads(row.pop("symptoms_json", None), [])
+        return rows
+
+    def get_problem_journey_mappings(self, problem_ids: list[str]) -> dict[str, dict[str, Any]]:
+        if not problem_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in problem_ids)
+        rows = self.db.query(
+            "SELECT * FROM problem_journey_mappings WHERE problem_id IN "
+            f"({placeholders}) ORDER BY mapping_confidence DESC",
+            problem_ids,
+        )
+        mappings: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            mappings.setdefault(row["problem_id"], row)
+        return mappings
+
+    def get_taxonomy_nodes(self, version: str | None) -> list[dict[str, Any]]:
+        if not version:
+            return []
+        rows = self.db.query(
+            "SELECT * FROM taxonomy_nodes WHERE version=? ORDER BY node_id",
+            (version,),
+        )
+        for row in rows:
+            row["synonyms"] = loads(row.pop("synonyms_json", None), [])
+            row["aliases"] = loads(row.pop("aliases_json", None), [])
+        return rows
+
     # ------------------------------------------------- problem portfolio narrative
     def latest_usable_dimension_run(self, feedback_run_id: str) -> dict[str, Any] | None:
         return self.db.query_one(
@@ -1969,14 +2292,13 @@ class Repository:
         self,
         feedback_run_id: str,
         dimension_run_id: str,
-        mds_id: str | None,
         serialization_version: str,
     ) -> dict[str, Any] | None:
         return self.db.query_one(
             "SELECT * FROM problem_portfolio_analysis_runs WHERE feedback_run_id=? AND dimension_run_id=? "
-            "AND COALESCE(mds_id, '')=? AND serialization_version=? AND status IN ('COMPLETED', 'SERIALIZED') "
+            "AND serialization_version=? AND status IN ('COMPLETED', 'SERIALIZED') "
             "ORDER BY created_at DESC LIMIT 1",
-            (feedback_run_id, dimension_run_id, mds_id or "", serialization_version),
+            (feedback_run_id, dimension_run_id, serialization_version),
         )
 
     def save_portfolio_serialization(
@@ -2098,34 +2420,6 @@ class Repository:
             row["top_categories"] = loads(row.pop("top_categories_json", None), [])
             row["representative_problem_ids"] = loads(row.pop("representative_problem_ids_json", None), [])
         return rows
-
-    def save_mds_relationships(self, run_id: str, rows: list[dict[str, Any]]) -> None:
-        with self.db.transaction() as conn:
-            conn.execute("DELETE FROM problem_mds_relationships WHERE run_id=?", (run_id,))
-            conn.executemany(
-                "INSERT INTO problem_mds_relationships (run_id, problem_id, neighbor_problem_id, rank, "
-                "euclidean_distance, distance_space, neighbor_title, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        run_id,
-                        item["problem_id"],
-                        item["neighbor_problem_id"],
-                        item["rank"],
-                        item["euclidean_distance"],
-                        item["distance_space"],
-                        item.get("neighbor_title"),
-                        now_iso(),
-                    )
-                    for item in rows
-                ],
-            )
-
-    def get_mds_relationships(self, run_id: str) -> list[dict[str, Any]]:
-        return self.db.query(
-            "SELECT * FROM problem_mds_relationships WHERE run_id=? ORDER BY problem_id, rank",
-            (run_id,),
-        )
 
     def save_portfolio_narrative(
         self,

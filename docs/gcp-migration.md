@@ -96,7 +96,7 @@ The script uploads `synthetic_banking_app_feedback_15000.csv`, captures the obje
 - `sql/migrations/003_bigquery_mds.sql` - MDS theme-map vectors, runs, points and neighbour tables.
 - `sql/migrations/004_bigquery_problem_dimensions.sql` - exploratory FAMD feature snapshots, runs, scores, definitions, contributions, memberships, trends and publications.
 - `sql/migrations/005_bigquery_problem_dimension_coefficients.sql` - signed FAMD coefficients, factor metadata and equations.
-- `sql/migrations/006_bigquery_problem_portfolio.sql` - portfolio runs, factor nomenclature/profiles, MDS relationships, serializations, narratives and validation.
+- `sql/migrations/006_bigquery_problem_portfolio.sql` - portfolio runs, factor nomenclature/profiles, serializations, narratives and validation.
 - `sql/views/001_dashboard_views.sql` - problem overview, journey summary, sentiment daily, report findings, relationship distribution, run health.
 
 Run manually:

@@ -66,26 +66,10 @@ class ProblemPortfolioService:
             )
         return run
 
-    def _resolve_mds(self, feedback_run_id: str, mds_id: str | None) -> dict[str, Any]:
-        if mds_id:
-            mds = self.repo.get_mds_run(mds_id)
-            if not mds:
-                raise ValueError(f"MDS snapshot {mds_id} was not found.")
-            if mds.get("run_id") != feedback_run_id:
-                raise ValueError("MDS snapshot does not belong to the requested feedback run.")
-        else:
-            mds = self.repo.latest_mds(feedback_run_id)
-        if not mds:
-            raise ValueError("No MDS snapshot is available for the requested feedback run.")
-        if mds.get("status") != "OK":
-            raise ValueError(f"MDS snapshot {mds.get('mds_id')} has status {mds.get('status')}.")
-        return mds
-
     def start(
         self,
         feedback_run_id: str | None = None,
         dimension_run_id: str | None = None,
-        mds_id: str | None = None,
         *,
         force_rerun: bool = False,
         generate_narrative: bool = True,
@@ -96,13 +80,11 @@ class ProblemPortfolioService:
         feedback_run = self._resolve_feedback_run(feedback_run_id)
         resolved_feedback_run_id = feedback_run["run_id"]
         dimension_run = self._resolve_dimension_run(resolved_feedback_run_id, dimension_run_id)
-        mds = self._resolve_mds(resolved_feedback_run_id, mds_id)
 
         if not force_rerun:
             existing = self.repo.find_reusable_portfolio_run(
                 resolved_feedback_run_id,
                 dimension_run["run_id"],
-                mds.get("mds_id"),
                 self.settings.portfolio_serialization_version,
             )
             if existing:
@@ -114,7 +96,6 @@ class ProblemPortfolioService:
                 "run_id": run_id,
                 "feedback_run_id": resolved_feedback_run_id,
                 "dimension_run_id": dimension_run["run_id"],
-                "mds_id": mds.get("mds_id"),
                 "status": "QUEUED",
                 "stage": "QUEUED",
                 "serialization_version": self.settings.portfolio_serialization_version,
@@ -133,13 +114,11 @@ class ProblemPortfolioService:
             parameters={
                 "feedback_run_id": resolved_feedback_run_id,
                 "dimension_run_id": dimension_run["run_id"],
-                "mds_id": mds.get("mds_id"),
                 "serialization_version": self.settings.portfolio_serialization_version,
                 "narrative_provider": self.settings.portfolio_narrative_provider,
                 "narrative_model": getattr(self.narrative_provider, "model_id", None),
                 "generate_narrative": generate_narrative,
                 "require_approved_factors": self.settings.portfolio_require_approved_factors,
-                "mds_neighbors": self.settings.portfolio_mds_neighbors,
             },
         )
         if run_in_thread:
@@ -175,8 +154,6 @@ class ProblemPortfolioService:
                 self.repo,
                 run["feedback_run_id"],
                 run["dimension_run_id"],
-                mds_id=run.get("mds_id"),
-                neighbor_limit=self.settings.portfolio_mds_neighbors,
                 max_problems=self.settings.portfolio_max_problems,
                 serialization_version=self.settings.portfolio_serialization_version,
                 require_approved_factors=self.settings.portfolio_require_approved_factors,
@@ -193,13 +170,11 @@ class ProblemPortfolioService:
             )
             self.repo.save_factor_nomenclature(run_id, serialization.get("factor_nomenclature") or [])
             self.repo.save_factor_profiles(run_id, serialization.get("factor_profiles") or [])
-            self.repo.save_mds_relationships(run_id, serialization.get("mds_relationships") or [])
             summary = {
                 "serialization_id": serialization_id,
                 "content_hash": content_hash,
                 "n_problems": (serialization.get("source") or {}).get("counts", {}).get("problems_serialized"),
                 "n_factors": (serialization.get("source") or {}).get("counts", {}).get("factors"),
-                "n_mds_relationships": (serialization.get("source") or {}).get("counts", {}).get("mds_relationships"),
                 "data_quality_warnings": (serialization.get("data_quality") or {}).get("warnings") or [],
             }
             self.repo.update_portfolio_run(

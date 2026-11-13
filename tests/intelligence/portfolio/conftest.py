@@ -265,39 +265,6 @@ def seed_portfolio(repo, feedback_run_id: str = "RUN-PORTFOLIO-TEST") -> tuple[s
             },
         )
 
-    mds_id = "MDS-PORTFOLIO-TEST"
-    repo.db.insert(
-        "problem_mds_runs",
-        {
-            "mds_id": mds_id,
-            "run_id": feedback_run_id,
-            "status": "OK",
-            "methodology_version": "mds-test-1.0.0",
-            "embedding_model": "test",
-            "distance_metric": "cosine",
-            "n_themes": 3,
-            "stress": 0.1,
-            "normalized_stress": 0.05,
-            "stress_status": "good",
-            "params_json": dumps({"distance_metric": "cosine"}),
-            "created_at": "2026-02-01T00:00:00+00:00",
-        },
-    )
-    for problem_id, x, y in (("PRB-001", 0.0, 0.0), ("PRB-002", 3.0, 4.0), ("PRB-003", 6.0, 8.0)):
-        repo.db.insert(
-            "problem_mds_points",
-            {
-                "mds_id": mds_id,
-                "run_id": feedback_run_id,
-                "problem_id": problem_id,
-                "x": x,
-                "y": y,
-                "display_x": x,
-                "display_y": y,
-                "vector_source": "test",
-                "metadata_json": dumps({}),
-            },
-        )
     return feedback_run_id, dimension_run_id
 
 
@@ -317,6 +284,7 @@ def build_portfolio_app(tmp_path: Path):
         cors_origins="http://testserver",
         problem_dimension_require_review=True,
         gemini_api_key="",
+        problem_dimension_llm_enabled=False,
         enable_problem_portfolio=True,
     )
     app = create_app(settings)

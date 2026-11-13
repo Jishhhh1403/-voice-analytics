@@ -46,7 +46,6 @@ UNAVAILABLE_ATTRIBUTES: tuple[dict[str, str], ...] = (
 INTERPRETATION_CONSTRAINTS: tuple[str, ...] = (
     "FAMD coefficients describe association in latent-dimension space, not causal effects.",
     "relative_squared_coordinate_share_pct is a descriptive squared-coordinate decomposition, not a causal share.",
-    "MDS axes have arbitrary orientation and no business meaning; use semantic proximity only.",
     "Missing measurements remain missing; they are never zero or evidence of absence.",
     "Draft or provisional factor names must be labelled as provisional and requiring review.",
     "Use only the approved business factor names supplied in factor_nomenclature.",
@@ -153,15 +152,6 @@ def _journey_names(repo: Repository, feedback_run: dict[str, Any]) -> dict[str, 
     }
 
 
-def _mds_run(repo: Repository, feedback_run_id: str, mds_id: str | None) -> dict[str, Any] | None:
-    if mds_id:
-        row = repo.db.query_one("SELECT * FROM problem_mds_runs WHERE mds_id=?", (mds_id,))
-        if row:
-            row["params"] = loads(row.pop("params_json", None), {})
-        return row
-    return repo.latest_mds(feedback_run_id)
-
-
 def _measurement_index(repo: Repository, feedback_run_id: str) -> dict[str, dict[str, dict[str, Any]]]:
     rows = repo.db.query(
         "SELECT * FROM problem_measurement_snapshots WHERE run_id=? ORDER BY calculated_at",
@@ -181,47 +171,11 @@ def _priority_index(repo: Repository, feedback_run_id: str) -> dict[str, dict[st
     return {row["problem_id"]: row for row in rows}
 
 
-def _mds_relationships(
-    points: dict[str, dict[str, Any]],
-    titles: dict[str, str],
-    limit: int,
-) -> dict[str, list[dict[str, Any]]]:
-    relationships: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    ordered_ids = sorted(points)
-    for problem_id in ordered_ids:
-        point = points[problem_id]
-        distances: list[tuple[float, str]] = []
-        for candidate_id in ordered_ids:
-            if candidate_id == problem_id:
-                continue
-            candidate = points[candidate_id]
-            distance = math.dist(
-                (float(point["x"]), float(point["y"])),
-                (float(candidate["x"]), float(candidate["y"])),
-            )
-            distances.append((distance, candidate_id))
-        distances.sort(key=lambda item: (item[0], item[1]))
-        for rank, (distance, neighbor_id) in enumerate(distances[:limit], start=1):
-            relationships[problem_id].append(
-                {
-                    "problem_id": problem_id,
-                    "neighbor_problem_id": neighbor_id,
-                    "neighbor_title": titles.get(neighbor_id),
-                    "rank": rank,
-                    "euclidean_distance": round(distance, 6),
-                    "distance_space": "raw_mds_coordinates",
-                }
-            )
-    return relationships
-
-
 def build_portfolio_serialization(
     repo: Repository,
     feedback_run_id: str,
     dimension_run_id: str,
     *,
-    mds_id: str | None = None,
-    neighbor_limit: int = 5,
     max_problems: int = 1000,
     serialization_version: str = "problem-portfolio-1.0.0",
     require_approved_factors: bool = True,
@@ -252,15 +206,47 @@ def build_portfolio_serialization(
         factor_id = _factor_id(definition)
         contributions = repo.get_dimension_contributions(dimension_run_id, definition["dimension_id"])
         approved = definition.get("review_status") in {"APPROVED", "PUBLISHED"}
+        source = str(definition.get("nomenclature_source") or "")
+        if approved and definition.get("analyst_name"):
+            business_name = definition["analyst_name"]
+        elif source == "LLM" and (definition.get("proposed_label") or definition.get("analyst_name")):
+            business_name = definition.get("proposed_label") or definition.get("analyst_name")
+        else:
+            business_name = definition.get("analyst_name") or definition.get("proposed_label")
+        if not business_name:
+            raise ValueError(
+                f"Factor {factor_id} has no business name. Generate and approve factor nomenclature first."
+            )
+        if approved:
+            nomenclature_status = "APPROVED"
+        elif source == "LLM":
+            nomenclature_status = "PROVISIONAL"
+        else:
+            nomenclature_status = "UNREVIEWED"
         item = {
             "factor_id": factor_id,
             "dimension_id": definition["dimension_id"],
             "dimension_number": definition.get("dimension_number"),
-            "business_name": definition.get("analyst_name") or definition.get("proposed_label"),
+            "business_name": business_name,
+            "short_name": definition.get("short_name"),
             "description": definition.get("description"),
+            "formal_definition": definition.get("description"),
+            "business_interpretation": definition.get("business_interpretation"),
+            "banking_domain": definition.get("banking_domain"),
+            "journey_scope": definition.get("journey_scope"),
+            "core_customer_experience": definition.get("core_customer_experience"),
+            "distinguishing_characteristics": definition.get("distinguishing_characteristics"),
+            "supporting_variables": definition.get("supporting_variables") or [],
+            "supporting_categories": definition.get("supporting_categories") or [],
             "review_status": definition.get("review_status") or "DRAFT",
+            "nomenclature_status": nomenclature_status,
             "provisional": not approved,
-            "source": "dimension_definition",
+            "source": source or "dimension_definition",
+            "prompt_version": definition.get("prompt_version"),
+            "model_name": definition.get("model_name"),
+            "taxonomy_version": definition.get("taxonomy_version"),
+            "confidence": definition.get("confidence"),
+            "confidence_explanation": definition.get("confidence_explanation"),
             "aliases": [
                 value
                 for value in (definition.get("proposed_label"), definition.get("analyst_name"))
@@ -344,15 +330,6 @@ def build_portfolio_serialization(
         (feedback_run_id, max_problems),
     )
     total_problems = repo.db.scalar("SELECT COUNT(*) FROM customer_problems WHERE run_id=?", (feedback_run_id,)) or 0
-    titles = {row["problem_id"]: row.get("title") for row in problem_rows}
-
-    mds = _mds_run(repo, feedback_run_id, mds_id)
-    points = {
-        row["problem_id"]: row
-        for row in (repo.mds_points(mds["mds_id"]) if mds and mds.get("status") == "OK" else [])
-    }
-    relationships = _mds_relationships(points, titles, max(1, neighbor_limit))
-    relationship_rows = [row for rows in relationships.values() for row in rows]
 
     problems: list[dict[str, Any]] = []
     for row in problem_rows:
@@ -392,7 +369,6 @@ def build_portfolio_serialization(
         if factors:
             dominant = max(factors, key=lambda item: abs(item.get("coefficient") or 0.0))
         equation = equations.get(problem_id)
-        point = points.get(problem_id)
         priority = priorities.get(problem_id)
         coverage_row = coverage.get(problem_id, {})
         module = (row.get("journey_node_id") or "").split(".")[0] or None
@@ -426,18 +402,6 @@ def build_portfolio_serialization(
                     if equation
                     else None
                 ),
-                "mds": (
-                    {
-                        "x": _round(point.get("x")),
-                        "y": _round(point.get("y")),
-                        "display_x": _round(point.get("display_x")),
-                        "display_y": _round(point.get("display_y")),
-                        "vector_source": point.get("vector_source"),
-                    }
-                    if point
-                    else None
-                ),
-                "mds_neighbors": relationships.get(problem_id, []),
                 "coverage": {
                     "status": coverage_row.get("coverage_status", "unknown"),
                     "relationship": coverage_row.get("coverage_relationship"),
@@ -467,8 +431,6 @@ def build_portfolio_serialization(
 
     provisional = [item["business_name"] for item in nomenclature if item["provisional"]]
     warnings: list[str] = []
-    if not mds:
-        warnings.append("No MDS snapshot is available; semantic relationships are unavailable.")
     if total_problems > len(problem_rows):
         warnings.append(f"Serialization truncated to {len(problem_rows)} of {total_problems} problems.")
     if provisional:
@@ -485,11 +447,6 @@ def build_portfolio_serialization(
             "feedback_run_id": feedback_run_id,
             "dimension_run_id": dimension_run_id,
             "dimension_run_status": dimension_run.get("status"),
-            "mds_id": mds.get("mds_id") if mds else None,
-            "mds_status": mds.get("status") if mds else None,
-            "mds_methodology_version": mds.get("methodology_version") if mds else None,
-            "mds_input_distance_metric": mds.get("distance_metric") if mds else None,
-            "portfolio_distance_metric": "euclidean",
             "famd_methodology_version": dimension_run.get("method_version"),
             "feature_schema_version": dimension_run.get("feature_schema_version"),
             "counts": {
@@ -497,8 +454,6 @@ def build_portfolio_serialization(
                 "problems_serialized": len(problems),
                 "factors": len(nomenclature),
                 "factor_scores": len(all_scores),
-                "mds_points": len(points),
-                "mds_relationships": len(relationship_rows),
             },
         },
         "availability": {
@@ -508,8 +463,6 @@ def build_portfolio_serialization(
                 "measurement snapshots",
                 "FAMD factor coefficients",
                 "factor nomenclature",
-                "MDS coordinates",
-                "Euclidean MDS neighbour distances",
                 "backlog coverage where a validation report exists",
             ],
             "unavailable": list(UNAVAILABLE_ATTRIBUTES),
@@ -525,7 +478,6 @@ def build_portfolio_serialization(
             "provisional_factor_names": provisional,
         },
         "problems": problems,
-        "mds_relationships": relationship_rows,
         "data_quality": {
             "warnings": warnings,
             "unavailable_attributes": list(UNAVAILABLE_ATTRIBUTES),
@@ -540,7 +492,6 @@ def build_narrative_context(
     serialization: dict[str, Any],
     *,
     max_problems: int = 30,
-    max_neighbors: int = 2,
 ) -> dict[str, Any]:
     """Return a deterministic, token-bounded narrative context.
 
@@ -574,7 +525,6 @@ def build_narrative_context(
                 "priority": problem.get("priority"),
                 "factors": problem.get("factors"),
                 "dominant_factor": problem.get("dominant_factor"),
-                "mds_neighbors": (problem.get("mds_neighbors") or [])[: max(1, max_neighbors)],
                 "coverage": problem.get("coverage"),
             }
         )

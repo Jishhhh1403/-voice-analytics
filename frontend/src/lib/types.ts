@@ -614,6 +614,70 @@ export type DimensionCoefficientMatrix = {
   interpretation_warning: string;
 };
 
+export type FactorNarrativeFeature = {
+  feature_name: string;
+  feature_type: "variable" | "category";
+  contribution_pct: number;
+  direction_summary?: string | null;
+};
+
+export type FactorNarrative = {
+  factor_id: string;
+  dimension_id: string;
+  name: string;
+  short_name: string;
+  description: string;
+  business_interpretation: string;
+  banking_domain: string;
+  journey_scope?: string | null;
+  core_customer_experience: string;
+  problem_count: number;
+  problem_share_pct: number;
+  explained_variance_pct?: number | null;
+  cumulative_variance_pct?: number | null;
+  mean_coefficient: number;
+  mean_abs_coefficient: number;
+  min_coefficient: number;
+  max_coefficient: number;
+  max_abs_coefficient: number;
+  top_features: FactorNarrativeFeature[];
+  positive_problem_pattern: string;
+  negative_problem_pattern: string;
+  representative_problem_ids: string[];
+  confidence: number;
+  confidence_explanation: string;
+};
+
+export type FactorNarrativePayload = {
+  status: string;
+  reason?: string | null;
+  summary?: string | null;
+  taxonomy_version?: string | null;
+  total_problems?: number | null;
+  total_factors?: number | null;
+  factors: FactorNarrative[];
+};
+
+export type DimensionNarrativeSerializationRecord = {
+  serialization_id: string;
+  run_id: string;
+  status: string;
+  prompt_version: string;
+  agent_version?: string | null;
+  model_name?: string | null;
+  content_hash: string;
+  payload: FactorNarrativePayload;
+  error?: string | null;
+  created_at: string;
+};
+
+export type DimensionNarrativeSerializationResponse = {
+  run_id: string;
+  available: boolean;
+  prompt_version: string;
+  serialization: DimensionNarrativeSerializationRecord | null;
+};
+
 export type DimensionProblemProfile = {
   run_id: string;
   run_status: string;
@@ -740,15 +804,11 @@ export type PortfolioSerializationRow = {
     source: {
       feedback_run_id: string;
       dimension_run_id: string;
-      mds_id?: string | null;
-      portfolio_distance_metric: string;
       counts: {
         problems_in_run: number;
         problems_serialized: number;
         factors: number;
         factor_scores: number;
-        mds_points: number;
-        mds_relationships: number;
       };
     };
     availability: {
@@ -772,16 +832,6 @@ export type PortfolioSerializationRow = {
       priority?: { priority_score?: number | null; rank?: number | null; escalation_status?: string | null } | null;
       factors: { factor_id: string; factor_name: string; dimension_id: string; coefficient: number; relative_squared_coordinate_share_pct?: number | null }[];
       measurements: Record<string, { value?: number | null; status: string; unit?: string | null }>;
-      mds?: { x: number; y: number } | null;
-      mds_neighbors: { neighbor_problem_id: string; neighbor_title?: string | null; euclidean_distance: number }[];
-    }[];
-    mds_relationships: {
-      problem_id: string;
-      neighbor_problem_id: string;
-      neighbor_title?: string | null;
-      rank: number;
-      euclidean_distance: number;
-      distance_space: string;
     }[];
     data_quality: {
       warnings: string[];
@@ -796,7 +846,6 @@ export type PortfolioRunSummary = {
   run_id: string;
   feedback_run_id: string;
   dimension_run_id: string;
-  mds_id?: string | null;
   status: string;
   stage?: string | null;
   serialization_version: string;
@@ -806,7 +855,6 @@ export type PortfolioRunSummary = {
   summary: {
     n_problems?: number;
     n_factors?: number;
-    n_mds_relationships?: number;
     data_quality_warnings?: string[];
     [key: string]: unknown;
   };

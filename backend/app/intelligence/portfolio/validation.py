@@ -13,11 +13,6 @@ CAUSAL_PATTERN = re.compile(
     r"\b(?:causes?|caused by|drives?|driven by|leads? to|results? in|responsible for)\b",
     re.IGNORECASE,
 )
-MDS_AXIS_PATTERN = re.compile(
-    r"\b(?:mds\s+)?(?:x|y)[- ]axis\b|\b(?:mds\s+)?(?:axis|dimension)\s*[12]\b",
-    re.IGNORECASE,
-)
-INTERPRETIVE_PATTERN = re.compile(r"\b(?:means?|represents?|indicates?|shows?)\b", re.IGNORECASE)
 CAUSAL_SHARE_PATTERN = re.compile(
     r"\b(?:cause|causal|drive|explain|account(?:s|ed|ing)? for|responsible|impact)\w*\b",
     re.IGNORECASE,
@@ -156,20 +151,6 @@ def validate_portfolio_narrative(
     )
     if causal_hits:
         errors.append("Narrative makes causal claims; coefficients are associations only.")
-
-    axis_hits = []
-    for path, text in blocks:
-        if MDS_AXIS_PATTERN.search(text) and INTERPRETIVE_PATTERN.search(text):
-            axis_hits.append(path)
-    checks.append(
-        _check(
-            "mds_axes_not_interpreted",
-            not axis_hits,
-            "MDS axes are not assigned business meaning." if not axis_hits else "MDS axis interpretation found in: " + ", ".join(axis_hits[:10]),
-        )
-    )
-    if axis_hits:
-        errors.append("Narrative assigns business meaning to MDS axes or dimensions.")
 
     causal_share_hits = []
     for path, text in blocks:

@@ -26,11 +26,19 @@ def test_publish_accepts_fully_approved_run_and_republish_for_rollback():
     validate_publishable(
         {"run_id": "DIM-1", "status": "APPROVED"},
         [
-            {"dimension_id": "D1", "review_status": "APPROVED"},
-            {"dimension_id": "D2", "review_status": "APPROVED"},
+            {"dimension_id": "D1", "review_status": "APPROVED", "analyst_name": "Payments reliability"},
+            {"dimension_id": "D2", "review_status": "APPROVED", "analyst_name": "Servicing clarity"},
         ],
     )
     validate_publishable(
         {"run_id": "DIM-1", "status": "PUBLISHED"},
-        [{"dimension_id": "D1", "review_status": "APPROVED"}],
+        [{"dimension_id": "D1", "review_status": "APPROVED", "analyst_name": "Payments reliability"}],
     )
+
+
+def test_publish_rejects_approved_but_unnamed_factors():
+    with pytest.raises(PublicationError, match="needs an LLM or analyst-approved name"):
+        validate_publishable(
+            {"run_id": "DIM-1", "status": "APPROVED"},
+            [{"dimension_id": "D1", "review_status": "APPROVED", "analyst_name": ""}],
+        )

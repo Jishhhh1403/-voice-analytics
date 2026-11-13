@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   CheckCircle2,
-  Download,
   FlaskConical,
   Layers3,
   Play,
@@ -22,16 +21,12 @@ import {
   relationshipTone,
 } from "../components/ui";
 import {
-  coefficientMatrixDownloadPath,
-  coefficientMatrixPath,
-  download,
   publishDimensionRun,
   reviewDimension,
   startDimensionRun,
 } from "../lib/api";
 import { dateTime, label, number, percent } from "../lib/format";
 import type {
-  DimensionCoefficientMatrix,
   DimensionDefinition,
   DimensionRun,
   DimensionStatus,
@@ -225,10 +220,6 @@ export default function DimensionsPage() {
     [feedbackRuns.data],
   );
   const run = useFetch<DimensionRun>(selectedRunId ? `/problem-dimensions/runs/${selectedRunId}` : null, [selectedRunId]);
-  const matrix = useFetch<DimensionCoefficientMatrix>(
-    selectedRunId ? coefficientMatrixPath(selectedRunId) : null,
-    [selectedRunId],
-  );
   const runInProgress = Boolean(
     run.data &&
       [
@@ -243,7 +234,6 @@ export default function DimensionsPage() {
 
   usePolling(() => {
     run.reload();
-    matrix.reload();
     status.reload();
   }, runInProgress);
 
@@ -261,7 +251,6 @@ export default function DimensionsPage() {
   const reload = () => {
     status.reload();
     run.reload();
-    matrix.reload();
   };
 
   const start = async () => {
@@ -339,13 +328,6 @@ export default function DimensionsPage() {
       levels,
     };
   });
-  const matrixDimensions = matrix.data?.dimensions || [];
-  const matrixProblemIds = Array.from(
-    new Set((matrix.data?.coefficients || []).map((item) => item.problem_id)),
-  ).slice(0, 15);
-  const coefficientLookup = new Map(
-    (matrix.data?.coefficients || []).map((item) => [`${item.problem_id}:${item.dimension_id}`, item]),
-  );
   const canStart = status.data.enabled && Boolean(feedbackRunId) && !starting;
 
   return (
@@ -500,97 +482,6 @@ export default function DimensionsPage() {
                   </p>
                 )}
               </Card>
-
-              {run.data && (
-                <Card
-                  title="Customer problem factor coefficients"
-                  hint="Signed FAMD row coordinates. Coefficients describe association in latent-dimension space, not causal effects."
-                  actions={
-                    <button
-                      className="btn btn-ghost btn-small"
-                      onClick={() =>
-                        download(
-                          coefficientMatrixDownloadPath(run.data!.run_id),
-                          `${run.data!.run_id}-coefficients.csv`,
-                        )
-                      }
-                      disabled={!matrix.data?.coefficients.length}
-                    >
-                      <Download size={14} />
-                      Export CSV
-                    </button>
-                  }
-                >
-                  {matrix.loading && !matrix.data && <Spinner label="Loading coefficients…" />}
-                  {matrix.error && <ErrorState message={matrix.error} onRetry={matrix.reload} />}
-                  {matrix.data && matrix.data.coefficients.length === 0 && (
-                    <EmptyState
-                      title="No coefficients available"
-                      detail="Run the analysis to generate signed problem-factor coefficients."
-                    />
-                  )}
-                  {matrix.data && matrix.data.coefficients.length > 0 && (
-                    <>
-                      <div className="dimension-coefficient-table-wrap">
-                        <table className="dimension-coefficient-table">
-                          <thead>
-                            <tr>
-                              <th>Problem</th>
-                              {matrixDimensions.map((dimension) => (
-                                <th key={dimension.dimension_id}>
-                                  <span className="mono">{dimension.factor_id}</span>
-                                  <small>{dimension.factor_name || dimension.dimension_id}</small>
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {matrixProblemIds.map((problemId) => (
-                              <tr key={problemId}>
-                                <th className="mono">
-                                  <Link to={`/problems/${problemId}`}>{problemId}</Link>
-                                </th>
-                                {matrixDimensions.map((dimension) => {
-                                  const cell = coefficientLookup.get(`${problemId}:${dimension.dimension_id}`);
-                                  return (
-                                    <td key={dimension.dimension_id}>
-                                      {cell ? (
-                                        <>
-                                          <strong className={cell.coefficient < 0 ? "coefficient-negative" : "coefficient-positive"}>
-                                            {cell.coefficient > 0 ? "+" : ""}
-                                            {cell.coefficient.toFixed(4)}
-                                          </strong>
-                                          <small>
-                                            {cell.relative_squared_coordinate_share_pct !== null &&
-                                            cell.relative_squared_coordinate_share_pct !== undefined
-                                              ? `${cell.relative_squared_coordinate_share_pct.toFixed(1)}% squared share`
-                                              : "zero vector"}
-                                          </small>
-                                        </>
-                                      ) : (
-                                        <span className="muted">-</span>
-                                      )}
-                                    </td>
-                                  );
-                                })}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      <p className="footnote">
-                        Showing {matrixProblemIds.length} of{" "}
-                        {new Set(matrix.data.coefficients.map((item) => item.problem_id)).size} problems.{" "}
-                        {matrix.data.share_definition}
-                      </p>
-                      <p className="dimension-warning">
-                        <AlertTriangle size={14} />
-                        {matrix.data.interpretation_warning}
-                      </p>
-                    </>
-                  )}
-                </Card>
-              )}
 
               {run.data && (
                 <div className="dimension-review-toolbar">

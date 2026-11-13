@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import threading
 import uuid
@@ -17,6 +19,11 @@ from ..intelligence.problem_dimensions.efa_runner import run_efa
 from ..intelligence.problem_dimensions.famd_runner import bootstrap_stability, run_famd
 from ..intelligence.problem_dimensions.feature_builder import FEATURE_SPECS, build_feature_rows, resolve_feature_specs
 from ..intelligence.problem_dimensions.interpretation import initial_definitions
+from ..intelligence.problem_dimensions.llm import (
+    LLMFactorInterpretationPipeline,
+    build_interpretation_pipeline,
+)
+from ..intelligence.problem_dimensions.llm.narrative_agent import FactorNarrativeAgent
 from ..intelligence.problem_dimensions.preprocessing import prepare_frame
 from ..intelligence.problem_dimensions.publisher import validate_publishable
 from ..repository import Repository, now_iso
@@ -25,9 +32,21 @@ logger = logging.getLogger("bci.problem_dimensions")
 
 
 class ProblemDimensionService:
-    def __init__(self, settings: Settings, repo: Repository) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        repo: Repository,
+        factor_interpretation: LLMFactorInterpretationPipeline | None = None,
+        factor_narrative: FactorNarrativeAgent | None = None,
+    ) -> None:
         self.settings = settings
         self.repo = repo
+        self.factor_interpretation = (
+            factor_interpretation
+            if factor_interpretation is not None
+            else build_interpretation_pipeline(settings, repo)
+        )
+        self.factor_narrative = factor_narrative if factor_narrative is not None else FactorNarrativeAgent(settings, repo)
         self._threads: dict[str, threading.Thread] = {}
 
     def _resolve_feedback_run(self, feedback_run_id: str | None) -> dict[str, Any]:
@@ -330,6 +349,26 @@ class ProblemDimensionService:
                     "and must not be presented as proven root causes."
                 ),
             }
+            interpretation_summary: dict[str, Any] | None = None
+            if self.factor_interpretation.available:
+                try:
+                    interpretation_summary = self.factor_interpretation.run(
+                        run_id,
+                        force=False,
+                        auto_approve=auto_publish,
+                    )
+                except Exception:
+                    logger.exception("LLM factor interpretation failed", extra={"run_id": run_id})
+                    interpretation_summary = {
+                        "status": "FAILED",
+                        "reason": "LLM factor nomenclature failed; factors remain unnamed.",
+                    }
+            else:
+                interpretation_summary = {
+                    "status": "UNAVAILABLE",
+                    "reason": "No LLM provider is configured; factors remain unnamed.",
+                }
+            diagnostics["llm_interpretation"] = interpretation_summary
             self.repo.update_dimension_run(
                 run_id,
                 status="PENDING_REVIEW",
@@ -340,7 +379,10 @@ class ProblemDimensionService:
                 excluded_features=all_excluded,
                 error=None,
             )
-            if auto_publish:
+            latest_definitions = self.repo.get_dimension_definitions(run_id)
+            if auto_publish and latest_definitions and all(
+                (item.get("analyst_name") or "").strip() for item in latest_definitions
+            ):
                 self.repo.publish_dimension_run(
                     run_id,
                     "system:auto",
@@ -401,6 +443,161 @@ class ProblemDimensionService:
         published = self.get_run(run_id)
         published["publication_id"] = publication_id
         return published
+
+    def _refresh_review_status_after_naming(self, run_id: str, run: dict[str, Any]) -> None:
+        definitions = self.repo.get_dimension_definitions(run_id)
+        if definitions and all(item["review_status"] == "APPROVED" for item in definitions):
+            self.repo.update_dimension_run(run_id, status="APPROVED", stage="APPROVED")
+        elif run["status"] in {"APPROVED", "PUBLISHED"}:
+            self.repo.update_dimension_run(run_id, status="PENDING_REVIEW", stage="PENDING_REVIEW")
+
+    def regenerate_interpretations(self, run_id: str, *, force: bool = True) -> dict[str, Any]:
+        run = self.get_run(run_id)
+        if not self.factor_interpretation.available:
+            return {
+                "run_id": run_id,
+                "status": "UNAVAILABLE",
+                "reason": "No LLM provider is configured; factors remain unnamed.",
+            }
+        summary = self.factor_interpretation.run(run_id, force=force, auto_approve=False)
+        self._refresh_review_status_after_naming(run_id, run)
+        return {"run_id": run_id, **summary}
+
+    def name_factors_for_problem(
+        self,
+        run_id: str,
+        problem_id: str,
+        *,
+        force: bool = True,
+    ) -> dict[str, Any]:
+        run = self.get_run(run_id)
+        if not self.factor_interpretation.available:
+            return {
+                "run_id": run_id,
+                "problem_id": problem_id,
+                "status": "UNAVAILABLE",
+                "reason": "No LLM provider is configured; factors remain unnamed.",
+            }
+        problem = self.repo.db.query_one(
+            "SELECT problem_id FROM customer_problems WHERE problem_id=?",
+            (problem_id,),
+        )
+        if not problem:
+            raise KeyError(problem_id)
+        summary = self.factor_interpretation.run(
+            run_id,
+            force=force,
+            auto_approve=False,
+            focus_problem_id=problem_id,
+        )
+        self._refresh_review_status_after_naming(run_id, run)
+        return {"run_id": run_id, "problem_id": problem_id, **summary}
+
+    def narrative_serialization(self, run_id: str) -> dict[str, Any]:
+        self.get_run(run_id)
+        record = self.repo.get_latest_dimension_narrative_serialization(run_id)
+        return {
+            "run_id": run_id,
+            "available": self.factor_narrative.available,
+            "prompt_version": self.settings.problem_dimension_factor_narrative_prompt_version,
+            "serialization": record,
+        }
+
+    def _apply_narrative_names(self, run_id: str, result: dict[str, Any]) -> None:
+        definitions = {
+            item["dimension_id"]: item for item in self.repo.get_dimension_definitions(run_id)
+        }
+        for factor in result.get("factors") or []:
+            definition = definitions.get(factor.get("dimension_id"))
+            if not definition or definition.get("review_status") == "APPROVED":
+                continue
+            self.repo.update_dimension_definition(
+                run_id,
+                factor["dimension_id"],
+                analyst_name=factor["name"],
+                proposed_label=factor.get("short_name"),
+                short_name=factor.get("short_name"),
+                description=factor.get("description"),
+                business_interpretation=factor.get("business_interpretation"),
+                banking_domain=factor.get("banking_domain"),
+                journey_scope=factor.get("journey_scope"),
+                core_customer_experience=factor.get("core_customer_experience"),
+                interpretation_status="DRAFT",
+                nomenclature_status="LLM_GENERATED",
+                nomenclature_source="LANGCHAIN_AGENT",
+                prompt_version=result.get("prompt_version"),
+                model_name=result.get("model_name"),
+                llm_analysis_run_id=run_id,
+                taxonomy_version=result.get("taxonomy_version"),
+                generated_at=now_iso(),
+                confidence=factor.get("confidence"),
+                confidence_explanation=factor.get("confidence_explanation"),
+            )
+
+    def generate_narrative_serialization(self, run_id: str) -> dict[str, Any]:
+        self.get_run(run_id)
+        prompt_version = self.settings.problem_dimension_factor_narrative_prompt_version
+        if not self.factor_narrative.available:
+            return {
+                "run_id": run_id,
+                "status": "UNAVAILABLE",
+                "reason": "No LangChain chat model is configured for factor narrative serialization.",
+                "serialization": None,
+            }
+        result = self.factor_narrative.generate(run_id)
+        status = str(result.get("status") or "FAILED")
+        payload = {
+            key: value
+            for key, value in result.items()
+            if key not in {"status", "reason", "model_name", "prompt_version", "agent_version"}
+        }
+        payload["status"] = status
+        if result.get("reason"):
+            payload["reason"] = result["reason"]
+        content_hash = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        self.repo.save_dimension_narrative_serialization(
+            run_id,
+            payload,
+            status=status,
+            prompt_version=prompt_version,
+            agent_version=result.get("agent_version"),
+            model_name=result.get("model_name"),
+            content_hash=content_hash,
+            error=result.get("reason"),
+        )
+        if status == "COMPLETED":
+            self._apply_narrative_names(run_id, result)
+            self._refresh_review_status_after_naming(run_id, self.get_run(run_id))
+        return self.narrative_serialization(run_id)
+
+    def interpretation_status(self, run_id: str) -> dict[str, Any]:
+        run = self.get_run(run_id)
+        return {
+            "run_id": run_id,
+            "provider_configured": self.factor_interpretation.available,
+            "prompt_versions": {
+                "factor_nomenclature": self.settings.problem_dimension_factor_nomenclature_prompt_version,
+                "cross_review": self.settings.problem_dimension_cross_review_prompt_version,
+            },
+            "dimensions": self.repo.list_dimension_llm_processing(run_id),
+            "proposals": self.repo.get_nomenclature_proposals(run_id),
+            "summary": (run.get("diagnostics") or {}).get("llm_interpretation"),
+        }
+
+    def interpretation_detail(self, run_id: str, dimension_id: str) -> dict[str, Any]:
+        self.get_run(run_id)
+        aggregation = self.repo.get_dimension_aggregation(run_id, dimension_id)
+        if not aggregation:
+            raise KeyError(dimension_id)
+        return {
+            "run_id": run_id,
+            "dimension_id": dimension_id,
+            "processing": self.repo.get_dimension_llm_processing(run_id, dimension_id),
+            "factor_equation": aggregation.get("aggregation"),
+            "proposal": self.repo.get_nomenclature_proposal(run_id, dimension_id),
+        }
 
     def dimension_payload(self, dimension_id: str, run_id: str | None = None) -> dict[str, Any]:
         run = self.get_run(run_id) if run_id else self.latest_published_run()

@@ -5,7 +5,6 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.intelligence.problem_portfolio_analysi
   run_id STRING NOT NULL,
   feedback_run_id STRING NOT NULL,
   dimension_run_id STRING NOT NULL,
-  mds_id STRING,
   status STRING NOT NULL,
   stage STRING,
   serialization_version STRING NOT NULL,
@@ -54,18 +53,6 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.intelligence.problem_factor_profiles` 
   created_at TIMESTAMP NOT NULL
 )
 CLUSTER BY run_id, factor_id;
-
-CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.intelligence.problem_mds_relationships` (
-  run_id STRING NOT NULL,
-  problem_id STRING NOT NULL,
-  neighbor_problem_id STRING NOT NULL,
-  rank INT64 NOT NULL,
-  euclidean_distance FLOAT64 NOT NULL,
-  distance_space STRING NOT NULL,
-  neighbor_title STRING,
-  created_at TIMESTAMP NOT NULL
-)
-CLUSTER BY run_id, problem_id;
 
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.intelligence.problem_portfolio_serializations` (
   serialization_id STRING NOT NULL,

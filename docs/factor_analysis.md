@@ -2,7 +2,7 @@
 
 This layer explains how each canonical customer problem relates to the latent
 dimensions discovered by FAMD (Factor Analysis of Mixed Data). It is additive:
-it does not change canonical problems, priorities, clustering or the MDS theme
+it does not change canonical problems, priorities, clustering or standalone MDS theme
 map.
 
 ## Method
@@ -44,10 +44,16 @@ by that problem.
 
 ## Factor names
 
-Proposed names are generated from the highest-contribution category levels and
-variables for each dimension. They are drafts for domain-expert review, not
-hardcoded business concepts. Analysts can approve, rename, request revision or
-reject each factor. Publication requires every retained factor to be approved.
+Business names come from the LLM factor-equation nomenclature stage. There are
+no deterministic factor names; unnamed factors remain unpublished. After FAMD,
+the optional [LLM interpretation layer](problem_dimension_interpretation.md)
+builds one complete equation payload per retained factor and makes one
+structured LLM call per factor with variable/category contributions,
+representative problem equations, problem positions and banking taxonomy
+context. LLM names are drafts for domain-expert review, not hardcoded business
+concepts. Analysts can approve, rename, request revision or reject each factor.
+Publication requires every retained factor to be approved and named, and an
+approved analyst name always takes precedence over an LLM proposal.
 
 ## Data availability
 

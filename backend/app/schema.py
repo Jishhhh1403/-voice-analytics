@@ -743,10 +743,108 @@ CREATE TABLE IF NOT EXISTS dimension_definitions (
     reviewer TEXT,
     review_note TEXT,
     reviewed_at TEXT,
+    nomenclature_source TEXT,
+    prompt_version TEXT,
+    model_name TEXT,
+    llm_analysis_run_id TEXT,
+    taxonomy_version TEXT,
+    generated_at TEXT,
+    short_name TEXT,
+    banking_domain TEXT,
+    journey_scope TEXT,
+    core_customer_experience TEXT,
+    supporting_variables_json TEXT,
+    supporting_categories_json TEXT,
+    contradictory_problem_ids_json TEXT,
+    distinguishing_characteristics TEXT,
+    nomenclature_status TEXT,
+    confidence REAL,
+    confidence_explanation TEXT,
     PRIMARY KEY (run_id, dimension_id)
 );
 CREATE INDEX IF NOT EXISTS idx_dd_run ON dimension_definitions(run_id);
 CREATE INDEX IF NOT EXISTS idx_dd_review ON dimension_definitions(run_id, review_status);
+
+-- LLM interpretation evidence is persisted per analysis run and per canonical
+-- problem so a failed or interrupted run can resume without repeating work.
+CREATE TABLE IF NOT EXISTS dimension_problem_interpretations (
+    run_id TEXT NOT NULL,
+    dimension_id TEXT NOT NULL,
+    canonical_problem_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    observation_json TEXT,
+    prompt_version TEXT,
+    model_name TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, dimension_id, canonical_problem_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dpi_run ON dimension_problem_interpretations(run_id, dimension_id);
+CREATE INDEX IF NOT EXISTS idx_dpi_status ON dimension_problem_interpretations(run_id, dimension_id, status);
+
+CREATE TABLE IF NOT EXISTS dimension_evidence_aggregations (
+    run_id TEXT NOT NULL,
+    dimension_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    aggregation_json TEXT,
+    prompt_version TEXT,
+    model_name TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, dimension_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dea_run ON dimension_evidence_aggregations(run_id);
+
+CREATE TABLE IF NOT EXISTS dimension_narrative_serializations (
+    serialization_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    agent_version TEXT,
+    model_name TEXT,
+    content_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dns_run ON dimension_narrative_serializations(run_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS dimension_nomenclature_proposals (
+    run_id TEXT NOT NULL,
+    dimension_id TEXT NOT NULL,
+    factor_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    proposal_json TEXT,
+    original_proposal_json TEXT,
+    cross_review_json TEXT,
+    validation_json TEXT,
+    prompt_version TEXT,
+    model_name TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, dimension_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dnp_run ON dimension_nomenclature_proposals(run_id);
+
+CREATE TABLE IF NOT EXISTS dimension_llm_processing (
+    run_id TEXT NOT NULL,
+    dimension_id TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL,
+    total_problems INTEGER NOT NULL DEFAULT 0,
+    processed_problems INTEGER NOT NULL DEFAULT 0,
+    failed_problems INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    prompt_version TEXT,
+    model_name TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, dimension_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dlp_run ON dimension_llm_processing(run_id);
 
 CREATE TABLE IF NOT EXISTS dimension_variable_contributions (
     run_id TEXT NOT NULL,
@@ -796,14 +894,13 @@ CREATE TABLE IF NOT EXISTS dimension_publications (
 CREATE INDEX IF NOT EXISTS idx_dpub_run ON dimension_publications(run_id, created_at DESC);
 
 -- ------------------------------------------------- problem portfolio narrative
--- A portfolio run binds one completed feedback run to one reviewed factor run
--- and one MDS snapshot. The statistical serialization is deterministic and is
--- persisted separately from the LLM narrative so it can be audited or reused.
+-- A portfolio run binds one completed feedback run to one reviewed factor run.
+-- The statistical serialization is deterministic and is persisted separately
+-- from the LLM narrative so it can be audited or reused.
 CREATE TABLE IF NOT EXISTS problem_portfolio_analysis_runs (
     run_id TEXT PRIMARY KEY,
     feedback_run_id TEXT NOT NULL,
     dimension_run_id TEXT NOT NULL,
-    mds_id TEXT,
     status TEXT NOT NULL,
     stage TEXT,
     serialization_version TEXT NOT NULL,
@@ -856,19 +953,6 @@ CREATE TABLE IF NOT EXISTS problem_factor_profiles (
     PRIMARY KEY (run_id, factor_id)
 );
 CREATE INDEX IF NOT EXISTS idx_pfp_run ON problem_factor_profiles(run_id, dimension_number);
-
-CREATE TABLE IF NOT EXISTS problem_mds_relationships (
-    run_id TEXT NOT NULL,
-    problem_id TEXT NOT NULL,
-    neighbor_problem_id TEXT NOT NULL,
-    rank INTEGER NOT NULL,
-    euclidean_distance REAL NOT NULL,
-    distance_space TEXT NOT NULL,
-    neighbor_title TEXT,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (run_id, problem_id, rank)
-);
-CREATE INDEX IF NOT EXISTS idx_pmr_run ON problem_mds_relationships(run_id, problem_id);
 
 CREATE TABLE IF NOT EXISTS problem_portfolio_serializations (
     serialization_id TEXT PRIMARY KEY,
