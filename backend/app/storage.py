@@ -3,9 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
-import shutil
-from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -32,7 +31,7 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class ObjectStore:
@@ -138,10 +137,7 @@ class LocalObjectStore(ObjectStore):
     def read_bytes(self, uri: str, generation: str | None = None) -> tuple[bytes, StoredObject]:
         key = self._key_from_uri(uri)
         meta = self.stat(uri, generation)
-        if generation:
-            path = self.root / ".versions" / key / generation
-        else:
-            path = self._path(key)
+        path = self.root / ".versions" / key / generation if generation else self._path(key)
         data = path.read_bytes()
         meta.sha256 = sha256_bytes(data)
         meta.size_bytes = len(data)

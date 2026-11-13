@@ -96,7 +96,7 @@ export default function ReportPage() {
         <div className="stat-card">
           <span className="stat-label">Evidence run</span>
           <div className="stat-value small mono">{report.feedback_run_id.slice(0, 18)}</div>
-          <span className="stat-detail">Taxonomy v{report.versions.taxonomy}</span>
+          <span className="stat-detail">Taxonomy v{String(report.versions.taxonomy)}</span>
         </div>
       </div>
 
@@ -146,11 +146,13 @@ export default function ReportPage() {
             })}
           </div>
           <div className="version-row">
-            {Object.entries(report.versions).map(([key, value]) => (
-              <span key={key}>
-                {label(key)} <strong className="mono">{value}</strong>
-              </span>
-            ))}
+            {Object.entries(report.versions || {})
+              .filter(([, value]) => typeof value === "string" || typeof value === "number")
+              .map(([key, value]) => (
+                <span key={key}>
+                  {label(key)} <strong className="mono">{String(value)}</strong>
+                </span>
+              ))}
           </div>
         </Card>
       </div>

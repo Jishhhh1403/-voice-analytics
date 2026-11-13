@@ -34,6 +34,10 @@ def test_problem_review_is_persisted_with_audit_trail(app_client):
     assert detail["reviews"]
     assert detail["reviews"][0]["decision"] in {"mark_in_review", "accept"}
     assert any(event["action"] == "problem_review" for event in app.state.repo.db.query("SELECT action FROM audit_log"))
+    assert app.state.repo.db.query_one(
+        "SELECT COUNT(*) AS n FROM human_review_decisions WHERE entity_id=?",
+        (problem["problem_id"],),
+    )["n"] == 1
 
 
 def test_sample_backlog_upload_validation_and_idempotency(app_client):
@@ -67,3 +71,23 @@ def test_sample_backlog_upload_validation_and_idempotency(app_client):
 
     stored = app.state.repo.get_report(run["report_id"])
     assert stored["reviewer_status"] == "pending"
+
+
+def test_problem_map_returns_mds_theme_attributes(app_client):
+    client, _, run_id = app_client
+    response = client.get("/api/v1/problem-map", params={"run_id": run_id})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "OK"
+    assert payload["run_id"] == run_id
+    assert payload["n_themes"] > 0
+    assert payload["themes"]
+    theme = payload["themes"][0]
+    assert {"problem_id", "display_x", "display_y", "evidence_volume", "negative_share", "coverage_status"} <= set(theme)
+    assert "priority_score" in theme
+    assert "neighbors" in theme
+
+    detail = client.get(f"/api/v1/problem-map/{theme['problem_id']}")
+    assert detail.status_code == 200
+    assert detail.json()["theme"]["problem_id"] == theme["problem_id"]

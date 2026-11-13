@@ -11,12 +11,14 @@ This document maps every algorithm in the feedback and backlog pipelines to the 
 ```mermaid
 flowchart LR
     subgraph FEEDBACK["Feedback pipeline (Modules A-E)"]
-        A["A. Ingest<br/>parse + redact + dedupe"]
-        B["B. Extract<br/>intent/aspect/symptom<br/>sentiment/outcome"]
-        C["C. Discover<br/>embed + cluster<br/>canonical problems"]
+        A["A. Ingest<br/>PII + language + quality<br/>link duplicates"]
+        B["B. Extract<br/>multi-intent/aspect<br/>grounded evidence"]
+        C["C. Discover<br/>hybrid embeddings<br/>canonical problems"]
         D["D. Map<br/>hybrid taxonomy match"]
+        M["Measurement<br/>windows + status"]
+        P["Prioritisation<br/>weighted components"]
         E["E. Publish<br/>daily aggregates"]
-        A --> B --> C --> D --> E
+        A --> B --> C --> D --> M --> P --> E
     end
 
     subgraph BACKLOG["Backlog pipeline (Modules F-G)"]
@@ -34,11 +36,14 @@ flowchart LR
 | Stage | Entry point | Core algorithms |
 | --- | --- | --- |
 | validate_source | `pipeline.py:94` | object stat + SHA-256 + size guard |
-| module_a_ingest | `ingestion.py:78` | CSV sniffing, schema checks, regex PII redaction, SHA-256 fingerprint dedupe |
-| module_b_extract | `extractor.py:56` / `providers.py:55` | regex lexicon entity matching, sentiment/emotion/effort/outcome scoring, heuristic confidence, LLM fallback |
-| module_c_discover | `clustering.py:61` | TF-IDF + SVD embeddings, signature grouping, Union-Find merge, cosine medoid |
-| module_d_map | `clustering.py:192` + `taxonomy.py:112` | weighted lexical taxonomy scoring, ancestor graph walk, proposal generation |
-| module_e_publish | `pipeline.py:212` + `repository.py:427` | SQL `GROUP BY` daily aggregation |
+| module_a_ingest | `ingestion.py` + `intelligence/{pii,language,duplicates,quality}.py` | CSV sniffing, schema checks, Presidio/regex PII redaction, language detection, MinHash/LSH near-duplicates, repeat complaints, data-quality checks. Duplicates are linked, never discarded. |
+| module_b_extract | `extractor.py` / `providers.py` | regex lexicon matching, multi-intent/multi-aspect output, field confidence, evidence verification, technical root cause forced to `unknown`, LLM fallback |
+| module_c_discover | `clustering.py` | TF-IDF/SVD + optional sentence-transformer/Vertex embeddings, signature grouping, Union-Find merge, cosine medoid, canonical descriptions |
+| module_d_map | `clustering.py` + `taxonomy.py` | weighted lexical/semantic taxonomy scoring, open-set thresholds, ancestor graph walk, proposal generation |
+| measurement_engine | `intelligence/measurement.py` | windowed metrics with explicit unit, status, provenance and `NO_DATA` handling |
+| priority_engine | `intelligence/prioritization.py` | transparent weighted component scores, missing-metric reporting, escalation rules |
+| mds_engine | `intelligence/mds.py` + `services/mds.py` | theme centroids, pairwise cosine distances, metric MDS projection, nearest-neighbour similarities, stress diagnostics |
+| module_e_publish | `pipeline.py` + `repository.py` | SQL `GROUP BY` daily aggregation + measurement/priority snapshots |
 | module_f_normalise | `backlog.py:238` | regex profiling + taxonomy alias/best-node mapping |
 | module_g_validate | `backlog.py:276` | embedding retrieval, Jaccard, weighted score, rule-based relationship tree |
 
@@ -77,7 +82,7 @@ flowchart TD
 | Bounded size check | Rejects source objects larger than `max_feedback_bytes` | `pipeline.py:98`, `ingestion.py:81` |
 | CSV dialect detection | `csv.Sniffer().sniff(text[:4096], delimiters=",")`; falls back to `csv.excel` | `ingestion.py:89` |
 | Header validation | All `REQUIRED_COLUMNS` must exist | `ingestion.py:14`, `ingestion.py:94` |
-| Row cap | Stops after `pipeline_max_rows` (default 5000) | `ingestion.py:106` |
+| Row cap | Stops after `pipeline_max_rows` (default 25000) | `ingestion.py:106` |
 | Timestamp parsing | `datetime.fromisoformat`, `Z -> +00:00`, naive -> UTC | `ingestion.py:48` |
 | Rating validation | `int(float(...))`, must be 1..5, else quarantine | `ingestion.py:61` |
 | Unicode normalization | NFKC, removes zero-width/non-breaking spaces, collapses whitespace | `text.py:47` |
@@ -228,12 +233,13 @@ The merge threshold is effectively `0.82` with the default `clustering_similarit
 ```mermaid
 flowchart TD
     P["ProblemDraft"] --> HAS{"journey_node_id in taxonomy?"}
-    HAS -- yes --> MAP["Mapping: primary, confidence 0.92 (aspect) / 0.72"]
-    HAS -- no --> PARENT["module_for(aspect.node_hint)"]
-    PARENT --> PROP["Taxonomy proposal: suggested name + example evidence"]
+    HAS -- yes --> MAP["Mapping: lexical confidence, pending below accept threshold"]
+    HAS -- no --> SEM{"embedding similarity >= semantic threshold?"}
+    SEM -- yes --> MAP
+    SEM -- no --> PROP["Open-set proposal: suggested name + example evidence + confidence"]
 ```
 
-Taxonomy matching is a **weighted lexical scorer**, not an ML classifier (`taxonomy.py:92`):
+Taxonomy matching uses a **weighted lexical scorer first, then an embedding-similarity fallback**, not an ML classifier (`taxonomy.py:92`, `clustering.py`). `TAXONOMY_ACCEPT_THRESHOLD` controls mapping acceptance; `TAXONOMY_SEMANTIC_THRESHOLD` gates the fallback; `TAXONOMY_OPEN_SET_THRESHOLD` marks proposals that are near the existing taxonomy boundary. Low-confidence mappings are stored as `pending_review`.
 
 | Rule | Weight |
 | --- | --- |
@@ -400,7 +406,7 @@ Priority ranking used to pick the best finding and produce the item-level verdic
 | `EMBEDDING_PROVIDER` | `local` | TF-IDF/SVD vs Gemini embeddings |
 | `EMBEDDING_DIMENSIONS` | `96` | SVD output dimensions |
 | `CLUSTERING_SIMILARITY_THRESHOLD` | `0.64` | Group merge threshold (`+0.18`, capped 0.9) |
-| `PIPELINE_MAX_ROWS` | `5000` | Feedback row cap |
+| `PIPELINE_MAX_ROWS` | `25000` | Feedback row cap |
 | Taxonomy `best_node` threshold | `1.4` (ingestion) / `2.0` (backlog) | Minimum lexical score to accept a mapping |
 | Alignment weights | `0.35 / 0.25 / 0.20 / 0.20` | Semantic / node / intent / coverage mix |
 | Candidate retrieval `K` | `8` | Problems compared per backlog item |
@@ -414,3 +420,116 @@ Priority ranking used to pick the best finding and produce the item-level verdic
 2. **Similarity is retrieval, not decision**: cosine similarity only selects candidates; the final relationship uses node, intent, coverage and score rules (`backlog.py:467`, `backlog.py:555`).
 3. **Determinism by default**: `rules` provider + TF-IDF/SVD + fixed thresholds/seed (`random_state=42`) produce reproducible local runs.
 4. **No invented root cause**: the prompt forbids inferred causes and the rule extractor only labels observable symptoms/outcomes.
+
+---
+
+## 11. Module A enhancements - PII, language, duplicates and quality
+
+### 11.1 PII providers
+
+`PII_PROVIDER=regex|presidio|hybrid` selects the redaction path. Presidio is imported lazily and banking recognisers are registered for IFSC, UPI, Aadhaar, account numbers, cards, phone numbers and email. Any import or model failure falls back to the deterministic regex path and records `provider_used="regex"` in metadata. Original text is retained only for provenance; every API, insight and backlog flow uses the redacted text.
+
+### 11.2 Language detection
+
+`LANGUAGE_DETECTION_PROVIDER=heuristic|langdetect|fasttext` returns `(language, confidence, supported, provider)`. The heuristic is deterministic and script-aware, with Hinglish markers. Customer text is never translated or overwritten.
+
+### 11.3 Duplicate policy
+
+Three mechanisms are deliberately separate:
+
+1. **Exact duplicates** - SHA-256 content fingerprint.
+2. **Near-duplicate candidates** - token 3-shingles, MinHash signatures and LSH banding; a candidate is kept only when exact Jaccard similarity is at or above `NEAR_DUPLICATE_THRESHOLD`.
+3. **Repeat complaints** - same `synthetic_customer_ref`, same lexical problem identity, inside `REPEAT_COMPLAINT_WINDOW_DAYS`.
+
+All relationships are persisted in `feedback_duplicate_candidates` and exposed through `GET /api/v1/duplicates`. Complaints are **never dropped**. The only rejections are invalid rows (missing text/timestamp/rating, duplicate source IDs within one upload).
+
+### 11.4 Data quality
+
+`run_data_quality_checks` reports explicit statuses (`PASS`, `WARN`, `FAIL`, `NOT_AVAILABLE`) for empty feedback, text length, corrupted characters, timestamps, source distribution, unsupported language, duplicate rate and encoding. Results are exposed through `GET /api/v1/data-quality`.
+
+---
+
+## 12. Measurement and prioritisation
+
+### 12.1 Measurement engine
+
+Metrics are computed independently over four explicit windows (`MEASUREMENT_WINDOW_DAYS`, `TREND_BASELINE_DAYS`, `TREND_CURRENT_DAYS`):
+
+- lifetime;
+- the configured measurement window (90 days by default);
+- the current trend window (30 days by default);
+- the previous trend window (30 days by default).
+
+Every snapshot includes `unit`, `status`, `calculation_method`, `measurement_window_start/end`, `input_record_count`, `source_availability`, a quality indicator and `metadata.window_coverage`. Core metrics are emitted with a window suffix (`_lifetime`, `_90d`, `_30d`, `_previous_30d`); canonical names are aliases of the measurement window.
+
+Missing or out-of-coverage windows are `NO_DATA`/`INSUFFICIENT_DATA`, never zero. A covered window with no matching records is a true `OK` zero. Metrics: `evidence_volume`, `distinct_customers`, `negative_share`, `repeat_complaint_count`, `source_diversity`, growth metrics (`volume_growth_abs`, `volume_growth_pct`, `customer_growth_abs`, `customer_growth_pct`, `negative_share_change`), compatibility metric `assessment_velocity_delta`, plus daily `feedback_count`/`negative_count`.
+
+### 12.2 Priority engine
+
+The priority score is a transparent weighted sum of:
+
+| Component | Default weight | Evidence inputs |
+| --- | --- | --- |
+| Customer impact | 0.30 | distinct customers, negative share, repeat complaints |
+| Business risk indicator | 0.30 | grounded risk terms (fraud, unauthorised, blocked, duplicate payment) + negative share |
+| Operational impact | 0.15 | evidence volume, source diversity, customer breadth |
+| Trend | 0.15 | current vs previous 30-day volume growth |
+| Strategic | 0.10 | journey module weight |
+
+Inputs are read from the stored measurement snapshots. Missing inputs are returned in `missing_metrics`; they contribute zero and reduce `supporting_evidence.data_completeness`. MDS is not used as severity, and sentiment is not treated as churn.
+
+Risk terms produce an **indicator** score. Detected terms are stored in `supporting_evidence.risk_indicators`; verification is explicitly `NOT_VERIFIED` with no verifier or source unless a real verification source is added. Priority snapshots persist the measurement window start/end. `GET /api/v1/priorities` and `GET /api/v1/problems/{id}/priority` expose the result and methodology version.
+
+### 12.3 MDS theme map
+
+`mds_engine` treats each canonical customer problem as a theme and projects semantic similarity into two dimensions. It does not re-cluster themes.
+
+1. Build one representative vector per theme: the centroid of member `extracted_insights.embedding_json` vectors when all themes have vectors with a consistent dimensionality; otherwise recompute every theme vector from theme text with one embedder. Embedding spaces are never mixed.
+2. Compute pairwise cosine distance, `1 - cosine_similarity`, clipped to `[0, 2]`.
+3. Run metric MDS with `sklearn.manifold.MDS` (`n_components=2`, precomputed dissimilarity, `MDS_RANDOM_STATE`, `MDS_MAX_ITER`, `n_init=4`). Two themes are placed symmetrically; one theme is insufficient for a map.
+4. Persist raw and display coordinates, top `MDS_NEIGHBORS` neighbours, stress and methodology parameters. Positions are semantic only and may rotate or reflect between runs.
+
+Business meaning is joined at read time: `evidence_volume` (bubble size), `negative_share` (default colour; labelled negative evidence share, not severity), `priority_score` / `business_risk_score` (alternative colours), `volume_growth_pct` (outline), and latest backlog `coverage_type` (dashed outline for uncovered / needs review). Theme-map failure is isolated and never fails the feedback pipeline. Endpoints: `GET /api/v1/problem-map`, `POST /api/v1/problem-map/recompute`, `GET /api/v1/problem-map/{problem_id}`.
+
+---
+
+## 13. Module F/G enhancements - hybrid retrieval and coverage
+
+Backlog validation now uses `HybridRetriever`: dense embeddings plus sparse TF-IDF, weighted by `RETRIEVAL_DENSE_WEIGHT`/`RETRIEVAL_SPARSE_WEIGHT`. An optional cross-encoder reranker runs only when installed and configured; otherwise the deterministic hybrid ranking is used.
+
+Optional backlog columns now include `intended_outcome`, `customer_intent`, `target_feature`, `target_journey`, `functional_scope` and `organisational_objective`. The validator still requires journey, intent, symptom coverage and acceptance-criteria checks before assigning a relationship. It never auto-approves or auto-rejects a backlog. Coverage rows and candidate rankings are persisted and exposed through `GET /api/v1/backlog-validation-reports/{id}/coverage`.
+
+---
+
+## 14. Guarded advanced analytics
+
+`intelligence/advanced.py` refuses to compute survival or conjoint analyses without their required inputs:
+
+- Survival requires event, duration, time origin and censoring data. Feedback sentiment is not an event.
+- Conjoint requires an experimental design with controlled attribute levels and choice responses. Ordinary feedback is not a design.
+
+---
+
+## 15. Problem dimensions - additive FAMD layer
+
+Problem dimensions are computed from canonical-problem and measurement evidence and published separately from the feedback pipeline. They are an exploratory association layer, not causal findings, severity, priority or a replacement for the MDS theme map.
+
+1. **Feature snapshot** - the builder emits a versioned, window-aware feature row per canonical problem. Inputs cover journey module/feature/stage, aspect, symptom category, customer intent, volume, distinct customers, negative share, repeat rate, source diversity, high-effort share, failure share, negative-emotion share, volume growth, absolute volume growth, customer growth, negative-share change, assessment velocity and evidence confidence. Active, supplementary and excluded roles are configurable; all-null or zero-variance features are excluded from fitting. IDs, titles, free text, raw feedback, MDS coordinates, `priority_score` and priority-derived fields are forbidden. Missing measurement windows remain missing (`None`), not zero. Attributes not present in the source data model are documented as unavailable rather than fabricated.
+2. **Quality gates** - row count, duplicate IDs, forbidden fields, overall/per-column missingness, sparse categories, zero-variance numerics, duplicate numeric vectors and invalid rate denominators. Failed gates block the run before model fitting; warnings are persisted.
+3. **Preprocessing** - missing numeric values are median-imputed and category values are filled with an explicit `__MISSING__` level for fitting only. The imputation policy and fitted medians are recorded on the run. Stored features retain their missing values.
+4. **FAMD** - `prince.FAMD` is fitted with a configured random state. The implementation retains up to the configured component count, records eigenvalues, explained/inertia variance, signed row coordinates and squared cosines, variable contributions and category contributions. Problems are assigned to their dominant absolute coordinate with a configurable ambiguity threshold. Signed row coordinates are exposed as canonical-problem coefficients: `CP_i = beta_i1*F1 + ... + beta_ik*Fk`. They are associations, not causal effects or regression betas. A descriptive squared-coordinate share is also stored: `relative_squared_coordinate_share_pct = s_ij^2 / sum_j(s_ij^2) * 100`; it is null when every coordinate for the problem is zero.
+5. **Diagnostics** - optional bootstrap runs compare component alignment and flag unstable dimensions. Optional EFA uses `sklearn.decomposition.FactorAnalysis` on numeric features only and is stored as a comparison, not as the publishing model. Quality checks, warnings, convergence and explained variance are persisted.
+6. **Interpretation and gating** - deterministic candidate factor names/descriptions plus top variables and representative problems are proposed from the fitted contributions. Proposed labels are drafts for domain-expert review and are not hardcoded business concepts. An analyst can approve, rename, request revision or reject each dimension. No dimension is publishable until every retained dimension is approved.
+7. **Publication** - publishing requires an approved, non-rejected run and writes immutable definitions, contributions, scores, relative shares, equations, memberships, trends and publication metadata. Reads of latest published dimensions resolve through the append-only `dimension_publications` table, so unpublished runs never replace the current publication. A previously published run can be republished by an analyst to restore it as the latest publication (rollback); this appends a new publication record rather than mutating the previous one. Run-specific endpoints remain available for review and audit.
+
+Lifecycle: `QUEUED -> BUILDING_FEATURES -> VALIDATING_DATA -> FITTING_FAMD -> VALIDATING_RESULTS -> PENDING_REVIEW -> APPROVED -> PUBLISHED`; failures end in `FAILED` and rejected runs in `REJECTED`. The layer is controlled by `ENABLE_PROBLEM_DIMENSIONS`, `ENABLE_PROBLEM_DIMENSION_EFA`, the `PROBLEM_DIMENSION_*` settings, and feature role settings (`PROBLEM_DIMENSION_ACTIVE_FEATURES`, `PROBLEM_DIMENSION_SUPPLEMENTARY_FEATURES`, `PROBLEM_DIMENSION_EXCLUDED_FEATURES`).
+
+---
+
+## 16. Problem portfolio narrative
+
+The portfolio layer serializes an approved factor run, the latest OK MDS snapshot and the completed feedback run into a deterministic, hashed payload. It includes approved factor nomenclature and profiles, signed problem coefficients, measurements, priorities, equations, Euclidean MDS neighbours, backlog coverage and data-quality constraints. Missing measurements remain null with their status and are never treated as zero.
+
+The full serialization is persisted and content-hashed. The Gemini provider receives a token-bounded context derived from it: the full factor catalogue, every problem in a compact index and detailed evidence for the highest-priority problems. The provider returns the `PortfolioNarrative` Pydantic contract using the official `google-genai` SDK with JSON Schema response mode.
+
+A deterministic validator rejects technical IDs in prose, unapproved factor names, causal language around FAMD coefficients or coordinate shares, business interpretation of MDS axes, ungrounded references, unqualified provisional factors and missing-as-zero language. `PASSED` and `WARNING` narratives complete the run; `FAILED` triggers corrective retries. Regeneration reloads the stored serialization and does not rerun MDS or FAMD. Narratives and validation results are append-only. See [problem_portfolio.md](problem_portfolio.md) for endpoints, settings and UI details.

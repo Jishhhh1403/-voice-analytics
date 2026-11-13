@@ -1,18 +1,26 @@
 from __future__ import annotations
 
-import json
 import uuid
-from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .db import Database, dumps, loads
 
-STAGES = ["validate_source", "module_a_ingest", "module_b_extract", "module_c_discover", "module_d_map", "module_e_publish"]
+STAGES = [
+    "validate_source",
+    "module_a_ingest",
+    "module_b_extract",
+    "module_c_discover",
+    "module_d_map",
+    "measurement_engine",
+    "priority_engine",
+    "mds_engine",
+    "module_e_publish",
+]
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class Repository:
@@ -32,7 +40,7 @@ class Repository:
         model_version: str,
         taxonomy_version: str,
     ) -> str:
-        run_id = f"RUN-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
+        run_id = f"RUN-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
         correlation_id = f"CORR-{uuid.uuid4().hex[:12]}"
         self.db.insert(
             "pipeline_runs",
@@ -177,11 +185,17 @@ class Repository:
                 "platform": record.platform,
                 "app_version": record.app_version,
                 "language": record.language,
+                "language_confidence": record.language_confidence,
                 "synthetic_customer_ref": record.synthetic_customer_ref,
                 "rating": record.rating,
                 "feedback_title": record.feedback_title,
                 "feedback_text_redacted": record.feedback_text_redacted,
+                "feedback_text_original": record.feedback_text_original,
                 "content_fingerprint": record.content_fingerprint,
+                "duplicate_group_id": record.duplicate_group_id,
+                "duplicate_type": record.duplicate_type,
+                "quality_flags_json": dumps(record.quality_flags),
+                "pii_types_json": dumps(record.pii_types),
                 "is_synthetic": int(record.is_synthetic),
                 "created_at": now_iso(),
             }
@@ -189,12 +203,58 @@ class Repository:
         ]
         self.db.executemany(
             "INSERT OR REPLACE INTO feedback_records (run_id, feedback_id, source_feedback_id, tenant_id, submitted_at, "
-            "source_type, source_channel, platform, app_version, language, synthetic_customer_ref, rating, feedback_title, "
-            "feedback_text_redacted, content_fingerprint, is_synthetic, created_at) VALUES "
+            "source_type, source_channel, platform, app_version, language, language_confidence, synthetic_customer_ref, "
+            "rating, feedback_title, feedback_text_redacted, feedback_text_original, content_fingerprint, "
+            "duplicate_group_id, duplicate_type, quality_flags_json, pii_types_json, is_synthetic, created_at) VALUES "
             "(:run_id, :feedback_id, :source_feedback_id, :tenant_id, :submitted_at, :source_type, :source_channel, "
-            ":platform, :app_version, :language, :synthetic_customer_ref, :rating, :feedback_title, "
-            ":feedback_text_redacted, :content_fingerprint, :is_synthetic, :created_at)",
+            ":platform, :app_version, :language, :language_confidence, :synthetic_customer_ref, :rating, "
+            ":feedback_title, :feedback_text_redacted, :feedback_text_original, :content_fingerprint, "
+            ":duplicate_group_id, :duplicate_type, :quality_flags_json, :pii_types_json, :is_synthetic, :created_at)",
             rows,
+        )
+
+    def save_duplicate_candidates(self, run_id: str, relationships: list[dict[str, Any]]) -> None:
+        if not relationships:
+            return
+        detected_at = now_iso()
+        self.db.executemany(
+            "INSERT OR REPLACE INTO feedback_duplicate_candidates "
+            "(candidate_id, run_id, feedback_id, candidate_feedback_id, duplicate_type, similarity, customer_ref, "
+            "detected_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    f"DUP-{uuid.uuid4().hex[:16]}",
+                    run_id,
+                    item.get("feedback_id"),
+                    item.get("candidate_feedback_id"),
+                    item.get("duplicate_type"),
+                    item.get("similarity"),
+                    (item.get("metadata") or {}).get("customer_ref"),
+                    detected_at,
+                    dumps(item.get("metadata") or {}),
+                )
+                for item in relationships
+            ],
+        )
+
+    def save_quality_report(self, run_id: str, checks: list[dict[str, Any]]) -> None:
+        created_at = now_iso()
+        self.db.executemany(
+            "INSERT INTO data_quality_reports "
+            "(run_id, check_name, status, severity, affected_rows, detail_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    run_id,
+                    check.get("check_name"),
+                    check.get("status"),
+                    check.get("severity"),
+                    check.get("affected_rows", 0),
+                    dumps(check.get("detail") or {}),
+                    created_at,
+                )
+                for check in checks
+            ],
         )
 
     def save_quarantine(self, run_id: str, rows: list[dict[str, Any]]) -> None:
@@ -221,10 +281,11 @@ class Repository:
     def save_insights(self, insights: list[Any]) -> None:
         self.db.executemany(
             "INSERT OR REPLACE INTO extracted_insights (insight_id, run_id, feedback_id, sentence_index, customer_intent, "
-            "aspect, journey_node_id, reported_problem, reported_symptom, sentiment, sentiment_score, emotion, "
-            "customer_effort, reported_outcome, evidence_span, language, model_id, prompt_version, schema_version, "
-            "extraction_timestamp, extraction_method, confidence, embedding_json, is_problem) VALUES "
-            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "intents_json, aspect, aspects_json, journey_node_id, reported_problem, reported_symptom, sentiment, "
+            "sentiment_score, emotion, customer_effort, reported_outcome, evidence_span, evidence_verified, "
+            "technical_root_cause, language, model_id, prompt_version, schema_version, extraction_timestamp, "
+            "extraction_method, confidence, field_confidence_json, human_review_status, cluster_id, embedding_json, "
+            "is_problem) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     item.insight_id,
@@ -232,7 +293,9 @@ class Repository:
                     item.feedback_id,
                     item.sentence_index,
                     item.customer_intent,
+                    dumps(item.intents),
                     item.aspect,
+                    dumps(item.aspects),
                     item.journey_node_id,
                     item.reported_problem,
                     item.reported_symptom,
@@ -242,6 +305,8 @@ class Repository:
                     item.customer_effort,
                     item.reported_outcome,
                     item.evidence_span,
+                    int(item.evidence_verified),
+                    item.technical_root_cause,
                     item.language,
                     item.model_id,
                     item.prompt_version,
@@ -249,6 +314,9 @@ class Repository:
                     item.extraction_timestamp,
                     item.extraction_method,
                     item.confidence,
+                    dumps(item.field_confidence),
+                    item.human_review_status,
+                    item.cluster_id,
                     item.embedding_json,
                     int(item.is_problem),
                 )
@@ -260,10 +328,11 @@ class Repository:
         """Persist insights with the correct run id (contracts do not carry it)."""
         self.db.executemany(
             "INSERT OR REPLACE INTO extracted_insights (insight_id, run_id, feedback_id, sentence_index, customer_intent, "
-            "aspect, journey_node_id, reported_problem, reported_symptom, sentiment, sentiment_score, emotion, "
-            "customer_effort, reported_outcome, evidence_span, language, model_id, prompt_version, schema_version, "
-            "extraction_timestamp, extraction_method, confidence, embedding_json, is_problem) VALUES "
-            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "intents_json, aspect, aspects_json, journey_node_id, reported_problem, reported_symptom, sentiment, "
+            "sentiment_score, emotion, customer_effort, reported_outcome, evidence_span, evidence_verified, "
+            "technical_root_cause, language, model_id, prompt_version, schema_version, extraction_timestamp, "
+            "extraction_method, confidence, field_confidence_json, human_review_status, cluster_id, embedding_json, "
+            "is_problem) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     item.insight_id,
@@ -271,7 +340,9 @@ class Repository:
                     item.feedback_id,
                     item.sentence_index,
                     item.customer_intent,
+                    dumps(item.intents),
                     item.aspect,
+                    dumps(item.aspects),
                     item.journey_node_id,
                     item.reported_problem,
                     item.reported_symptom,
@@ -281,6 +352,8 @@ class Repository:
                     item.customer_effort,
                     item.reported_outcome,
                     item.evidence_span,
+                    int(item.evidence_verified),
+                    item.technical_root_cause,
                     item.language,
                     item.model_id,
                     item.prompt_version,
@@ -288,6 +361,9 @@ class Repository:
                     item.extraction_timestamp,
                     item.extraction_method,
                     item.confidence,
+                    dumps(item.field_confidence),
+                    item.human_review_status,
+                    item.cluster_id,
                     item.embedding_json,
                     int(item.is_problem),
                 )
@@ -309,12 +385,20 @@ class Repository:
                     "signature": problem.signature,
                     "title": problem.title,
                     "problem_statement": problem.problem_statement,
+                    "canonical_description": problem.canonical_description or problem.problem_statement,
                     "customer_intent": problem.customer_intent,
                     "aspect": problem.aspect,
                     "symptom_category": problem.symptom_category,
                     "journey_node_id": problem.journey_node_id,
                     "status": problem.lifecycle_status,
                     "lifecycle_status": problem.lifecycle_status,
+                    "validation_status": problem.validation_status,
+                    "human_review_status": problem.human_review_status,
+                    "discovery_confidence": problem.discovery_confidence,
+                    "symptoms_json": dumps(problem.symptoms),
+                    "parent_problem_id": problem.parent_problem_id,
+                    "embedding_ref": problem.embedding_ref,
+                    "model_metadata_json": dumps(problem.model_metadata),
                     "evidence_count": problem.evidence_count,
                     "distinct_customers": problem.distinct_customers,
                     "negative_count": problem.negative_count,
@@ -329,6 +413,55 @@ class Repository:
                 for problem in problems
             ],
             ["problem_id"],
+        )
+
+    def save_problem_symptoms(self, run_id: str, problems: list[Any]) -> None:
+        rows = []
+        seen: set[tuple[str, str]] = set()
+        for problem in problems:
+            for symptom in problem.symptoms or []:
+                key = (problem.problem_id, symptom.strip().lower())
+                if not key[1] or key in seen:
+                    continue
+                seen.add(key)
+                rows.append(
+                    (
+                        problem.problem_id,
+                        symptom.lower().replace(" ", "_")[:80],
+                        symptom,
+                        problem.symptom_category or "general",
+                        0.6,
+                        now_iso(),
+                    )
+                )
+        if rows:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO problem_symptoms (problem_id, symptom_key, symptom_label, symptom_category, confidence, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def save_problem_relationships(self, run_id: str, relationships: list[dict[str, Any]]) -> None:
+        if not relationships:
+            return
+        self.db.executemany(
+            "INSERT OR REPLACE INTO problem_relationships (relationship_id, run_id, source_problem_id, "
+            "target_problem_id, relationship_type, confidence, status, rationale, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    item["relationship_id"],
+                    run_id,
+                    item["source_problem_id"],
+                    item["target_problem_id"],
+                    item["relationship_type"],
+                    item.get("confidence", 0.5),
+                    item.get("status", "candidate"),
+                    item.get("rationale"),
+                    now_iso(),
+                )
+                for item in relationships
+            ],
         )
 
     def replace_evidence(self, run_id: str, evidence_by_problem: dict[str, list[tuple[Any, Any]]]) -> None:
@@ -402,6 +535,35 @@ class Repository:
                 for item in mappings
             ],
         )
+
+    def save_problem_journey_mappings(self, run_id: str, mappings: list[dict[str, Any]], taxonomy: Any) -> None:
+        rows = []
+        for item in mappings:
+            node_id = item.get("node_id")
+            chain = taxonomy.ancestors(node_id) if node_id else []
+            module_id = next((node.node_id for node in chain if node.node_type == "module"), None)
+            feature_id = node_id if node_id and node_id != module_id else None
+            rows.append(
+                (
+                    item["mapping_id"],
+                    item["problem_id"],
+                    module_id,
+                    feature_id,
+                    None,
+                    item["confidence"],
+                    item["rationale"],
+                    item.get("status", "candidate"),
+                    item["taxonomy_version"],
+                    now_iso(),
+                )
+            )
+        if rows:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO problem_journey_mappings (mapping_id, problem_id, module_id, feature_id, "
+                "journey_stage_id, mapping_confidence, explanation, status, taxonomy_version, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
 
     def save_proposals(self, run_id: str, proposals: list[dict[str, Any]]) -> None:
         self.db.executemany(
@@ -690,17 +852,54 @@ class Repository:
             (problem_id,),
         )
         problem["insights"] = self.db.query(
-            "SELECT insight_id, customer_intent, aspect, reported_symptom, sentiment, emotion, customer_effort, "
-            "reported_outcome, confidence FROM extracted_insights WHERE feedback_id IN "
-            "(SELECT feedback_id FROM problem_evidence WHERE problem_id=?) ORDER BY confidence DESC LIMIT 50",
+            "SELECT feedback_id, insight_id, customer_intent, aspect, intents_json, aspects_json, "
+            "reported_problem, reported_symptom, sentiment, sentiment_score, emotion, customer_effort, "
+            "reported_outcome, evidence_span, language, technical_root_cause, evidence_verified, "
+            "field_confidence_json, human_review_status, confidence FROM extracted_insights WHERE feedback_id IN "
+            "(SELECT feedback_id FROM problem_evidence WHERE problem_id=?) ORDER BY confidence DESC LIMIT 200",
             (problem_id,),
         )
+        for insight in problem["insights"]:
+            insight["intents"] = loads(insight.pop("intents_json", None), [])
+            insight["aspects"] = loads(insight.pop("aspects_json", None), [])
+            insight["field_confidence"] = loads(insight.pop("field_confidence_json", None), {})
+        insights_by_feedback: dict[str, list[dict[str, Any]]] = {}
+        for insight in problem["insights"]:
+            insights_by_feedback.setdefault(str(insight.get("feedback_id")), []).append(insight)
+        for evidence in problem["evidence"]:
+            evidence["insights"] = insights_by_feedback.get(str(evidence.get("feedback_id")), [])
         problem["reviews"] = self.db.query(
             "SELECT reviewer, decision, note, created_at FROM review_decisions WHERE entity_type='problem' "
             "AND entity_id=? ORDER BY created_at DESC",
             (problem_id,),
         )
         return problem
+
+    def _record_human_review(
+        self,
+        entity_type: str,
+        entity_id: str,
+        reviewer: str,
+        decision: str,
+        note: str,
+        original_value: str | None = None,
+        corrected_value: str | None = None,
+    ) -> None:
+        self.db.insert(
+            "human_review_decisions",
+            {
+                "review_id": "HR-" + uuid.uuid4().hex[:16],
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "reviewer": reviewer,
+                "decision": decision,
+                "original_value": original_value,
+                "corrected_value": corrected_value,
+                "note": note,
+                "methodology_version": None,
+                "created_at": now_iso(),
+            },
+        )
 
     def review_problem(self, problem_id: str, reviewer: str, decision: str, note: str, new_title: str | None) -> None:
         status_map = {
@@ -734,6 +933,7 @@ class Repository:
                 "created_at": now_iso(),
             },
         )
+        self._record_human_review("problem", problem_id, reviewer, decision, note, corrected_value=new_title)
         self.audit(reviewer, "problem_review", "problem", problem_id, {"decision": decision, "note": note})
 
     def travel_metadata(self, run_id: str | None = None) -> dict[str, Any]:
@@ -763,6 +963,7 @@ class Repository:
             "UPDATE taxonomy_proposals SET status=? WHERE proposal_id=?",
             ("approved" if decision == "approve" else "rejected", proposal_id),
         )
+        self._record_human_review("taxonomy_proposal", proposal_id, reviewer, decision, note)
         self.audit(reviewer, "taxonomy_proposal_review", "taxonomy_proposal", proposal_id, {"decision": decision, "note": note})
 
     # ---------------------------------------------------------------- backlog
@@ -882,6 +1083,275 @@ class Repository:
         run["stages"] = loads(run.pop("stage_json", None), [])
         return run
 
+    def save_model_execution(
+        self,
+        run_id: str,
+        stage: str,
+        provider: str,
+        model_id: str,
+        prompt_version: str | None,
+        input_count: int,
+        output_count: int,
+        status: str = "succeeded",
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> None:
+        self.db.insert(
+            "model_execution_history",
+            {
+                "execution_id": "ME-" + uuid.uuid4().hex[:16],
+                "run_id": run_id,
+                "stage": stage,
+                "provider": provider,
+                "model_id": model_id,
+                "prompt_version": prompt_version,
+                "input_count": input_count,
+                "output_count": output_count,
+                "status": status,
+                "error": error,
+                "metadata_json": dumps(metadata or {}),
+                "started_at": started_at,
+                "finished_at": finished_at or now_iso(),
+            },
+        )
+
+    def save_measurement(self, run_id: str, measurement: Any, methodology_version: str) -> None:
+        if measurement.daily:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO problem_metrics_daily (run_id, problem_id, day, metric_name, metric_value, "
+                "unit, status, methodology_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        item["problem_id"],
+                        item["day"],
+                        item["metric_name"],
+                        item.get("metric_value"),
+                        item.get("unit"),
+                        item.get("status", "OK"),
+                        methodology_version,
+                    )
+                    for item in measurement.daily
+                ],
+            )
+        if measurement.snapshots:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO problem_measurement_snapshots (snapshot_id, run_id, problem_id, metric_name, "
+                "metric_value, metric_text_value, unit, status, calculation_method, measurement_window_start, "
+                "measurement_window_end, input_record_count, source_availability, quality_indicator, calculated_at, "
+                "methodology_version, dimensions_json, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        "MS-" + uuid.uuid4().hex[:16],
+                        run_id,
+                        item["problem_id"],
+                        item["metric_name"],
+                        item.get("metric_value"),
+                        None,
+                        item.get("unit"),
+                        item["status"],
+                        item.get("calculation_method"),
+                        item.get("window_start"),
+                        item.get("window_end"),
+                        item.get("input_record_count", 0),
+                        item.get("source_availability", "available"),
+                        item.get("quality_indicator"),
+                        now_iso(),
+                        methodology_version,
+                        dumps(item.get("dimensions") or {}),
+                        dumps(item.get("metadata") or {}),
+                    )
+                    for item in measurement.snapshots
+                ],
+            )
+
+    def save_priorities(self, run_id: str, result: Any) -> None:
+        now = now_iso()
+        version = result.scores[0]["methodology_version"] if result.scores else "priority-1.0.0"
+        self.db.insert(
+            "scoring_methodology_versions",
+            {
+                "version": version,
+                "description": "Transparent weighted prioritisation of customer problems.",
+                "weights_json": dumps(result.weights),
+                "created_at": now,
+            },
+            replace=True,
+        )
+        if not result.scores:
+            return
+        self.db.executemany(
+            "INSERT OR REPLACE INTO problem_priority_snapshots (snapshot_id, run_id, problem_id, "
+            "customer_impact_score, business_risk_score, operational_impact_score, trend_score, strategic_score, "
+            "priority_score, rank, escalation_status, escalation_reasons_json, missing_metrics_json, "
+            "supporting_evidence_json, methodology_version, measurement_window_start, measurement_window_end, "
+            "calculated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "PS-" + uuid.uuid4().hex[:16],
+                    run_id,
+                    item["problem_id"],
+                    item["customer_impact_score"],
+                    item["business_risk_score"],
+                    item["operational_impact_score"],
+                    item["trend_score"],
+                    item["strategic_score"],
+                    item["priority_score"],
+                    item["rank"],
+                    item["escalation_status"],
+                    dumps(item["escalation_reasons"]),
+                    dumps(item["missing_metrics"]),
+                    dumps(item["supporting_evidence"]),
+                    item["methodology_version"],
+                    item.get("measurement_window_start"),
+                    item.get("measurement_window_end"),
+                    now,
+                )
+                for item in result.scores
+            ],
+        )
+
+    def replace_mds_result(self, run_id: str, result: Any) -> str:
+        """Persist one MDS snapshot per run, replacing any previous snapshot."""
+        mds_id = "MDS-" + uuid.uuid4().hex[:16]
+        created_at = now_iso()
+        self.db.execute("DELETE FROM problem_mds_neighbors WHERE run_id=?", (run_id,))
+        self.db.execute("DELETE FROM problem_mds_points WHERE run_id=?", (run_id,))
+        self.db.execute("DELETE FROM problem_mds_runs WHERE run_id=?", (run_id,))
+        self.db.execute("DELETE FROM problem_theme_vectors WHERE run_id=?", (run_id,))
+        self.db.insert(
+            "problem_mds_runs",
+            {
+                "mds_id": mds_id,
+                "run_id": run_id,
+                "status": result.status,
+                "methodology_version": getattr(result, "methodology_version", "mds-1.0.0"),
+                "embedding_model": result.embedding_model,
+                "distance_metric": (result.params or {}).get("distance_metric", "cosine"),
+                "n_themes": len(result.points),
+                "stress": result.stress,
+                "normalized_stress": result.normalized_stress,
+                "stress_status": result.stress_status,
+                "params_json": dumps(result.params),
+                "created_at": created_at,
+            },
+        )
+        if result.theme_vectors:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO problem_theme_vectors "
+                "(run_id, problem_id, model_name, dimensions, vector_json, source, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        item["problem_id"],
+                        item["model_name"],
+                        item["dimensions"],
+                        item["vector_json"],
+                        item["source"],
+                        created_at,
+                    )
+                    for item in result.theme_vectors
+                ],
+            )
+        if result.points:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO problem_mds_points "
+                "(mds_id, run_id, problem_id, x, y, display_x, display_y, vector_source, metadata_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        mds_id,
+                        run_id,
+                        item["problem_id"],
+                        item["x"],
+                        item["y"],
+                        item["display_x"],
+                        item["display_y"],
+                        item.get("vector_source"),
+                        dumps({}),
+                    )
+                    for item in result.points
+                ],
+            )
+        if result.neighbors:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO problem_mds_neighbors "
+                "(mds_id, run_id, problem_id, neighbor_problem_id, rank, cosine_similarity, cosine_distance) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        mds_id,
+                        run_id,
+                        item["problem_id"],
+                        item["neighbor_problem_id"],
+                        item["rank"],
+                        item["cosine_similarity"],
+                        item["cosine_distance"],
+                    )
+                    for item in result.neighbors
+                ],
+            )
+        return mds_id
+
+    def latest_mds(self, run_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT * FROM problem_mds_runs WHERE run_id=? ORDER BY created_at DESC LIMIT 1", (run_id,)
+        )
+        if not row:
+            return None
+        row["params"] = loads(row.pop("params_json", None), {})
+        return row
+
+    def mds_points(self, mds_id: str) -> list[dict[str, Any]]:
+        return self.db.query("SELECT * FROM problem_mds_points WHERE mds_id=? ORDER BY problem_id", (mds_id,))
+
+    def mds_neighbors(self, mds_id: str) -> list[dict[str, Any]]:
+        return self.db.query(
+            "SELECT * FROM problem_mds_neighbors WHERE mds_id=? ORDER BY problem_id, rank", (mds_id,)
+        )
+
+    def latest_coverage_for_feedback_run(self, run_id: str) -> dict[str, dict[str, Any]]:
+        """Return the latest backlog coverage per problem for a feedback run.
+
+        Validation reports store the feedback run id inside the report payload;
+        parse recent reports rather than adding a cross-store foreign key.
+        """
+        reports = self.db.query(
+            "SELECT report_id, report_json FROM validation_reports ORDER BY created_at DESC LIMIT 100"
+        )
+        for report in reports:
+            payload = loads(report.get("report_json"), {})
+            if payload.get("feedback_run_id") != run_id:
+                continue
+            rows = self.db.query(
+                "SELECT problem_id, coverage_type, relationship FROM backlog_coverage_matrix "
+                "WHERE report_id=? AND problem_id IS NOT NULL",
+                (report["report_id"],),
+            )
+            rank = {
+                "full": 0,
+                "partial": 1,
+                "related": 2,
+                "needs_review": 3,
+                "uncovered": 4,
+                "out_of_scope": 5,
+            }
+            coverage: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                problem_id = row["problem_id"]
+                existing = coverage.get(problem_id)
+                if existing is None or rank.get(row["coverage_type"], 9) < rank.get(existing["coverage_status"], 9):
+                    coverage[problem_id] = {
+                        "coverage_status": row["coverage_type"],
+                        "coverage_relationship": row["relationship"],
+                        "coverage_report_id": report["report_id"],
+                    }
+            return coverage
+        return {}
+
     def save_report(self, report_id: str, upload_id: str, run_id: str, summary: dict[str, Any], report: dict[str, Any], findings: list[dict[str, Any]]) -> None:
         self.db.insert(
             "validation_reports",
@@ -918,6 +1388,70 @@ class Repository:
                 for item in findings
             ],
         )
+
+    def save_coverage_matrix(self, report_id: str, report: dict[str, Any]) -> None:
+        created_at = now_iso()
+        rows: list[tuple[Any, ...]] = []
+        candidate_rows: list[tuple[Any, ...]] = []
+        for index, item in enumerate(report.get("backlog_items", []), start=1):
+            findings = item.get("findings") or []
+            best = findings[0] if findings else None
+            relationship = best["relationship"] if best else "NO_CLEAR_RELATIONSHIP"
+            coverage_type = {
+                "ADDRESSES": "full",
+                "PARTIALLY_ADDRESSES": "partial",
+                "RELATED_BUT_NOT_SOLVING": "related",
+                "NEEDS_REVIEW": "needs_review",
+                "CONTRADICTS_OR_OUT_OF_SCOPE": "out_of_scope",
+            }.get(relationship, "uncovered")
+            rows.append(
+                (
+                    report_id,
+                    item["backlog_id"],
+                    best.get("problem_id") if best else None,
+                    relationship,
+                    coverage_type,
+                    best.get("alignment_score", 0.0) if best else 0.0,
+                    None,
+                    index,
+                    created_at,
+                )
+            )
+            for rank, finding in enumerate(findings[:10], start=1):
+                candidate_rows.append(
+                    (
+                        f"BPC-{uuid.uuid4().hex[:16]}",
+                        report_id,
+                        report.get("validation_run_id"),
+                        item["backlog_id"],
+                        finding.get("problem_id"),
+                        None,
+                        None,
+                        finding.get("alignment_score", 0.0),
+                        None,
+                        rank,
+                        dumps(
+                            {
+                                "relationship": finding.get("relationship"),
+                                "rationale": finding.get("rationale"),
+                            }
+                        ),
+                        created_at,
+                    )
+                )
+        if rows:
+            self.db.executemany(
+                "INSERT INTO backlog_coverage_matrix (report_id, backlog_id, problem_id, relationship, coverage_type, "
+                "alignment_score, priority_score, priority_rank, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+        if candidate_rows:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO backlog_problem_candidates (candidate_id, report_id, validation_run_id, "
+                "backlog_id, problem_id, dense_score, sparse_score, fused_score, rerank_score, rank, reasons_json, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                candidate_rows,
+            )
 
     def get_report(self, report_id: str) -> dict[str, Any] | None:
         row = self.db.query_one("SELECT * FROM validation_reports WHERE report_id=?", (report_id,))
@@ -957,7 +1491,716 @@ class Repository:
             },
         )
         self.db.execute("UPDATE validation_reports SET reviewer_status=? WHERE report_id=?", (decision, report_id))
+        self._record_human_review("validation_report", report_id, reviewer, decision, note)
         self.audit(reviewer, "report_review", "validation_report", report_id, {"decision": decision, "note": note})
+
+    # ------------------------------------------------------ problem dimensions
+    def save_feature_snapshot(self, snapshot_id: str, build: Any) -> None:
+        rows = [
+            {
+                "snapshot_id": snapshot_id,
+                "feedback_run_id": build.feedback_run_id,
+                "canonical_problem_id": row.problem_id,
+                "as_of_date": build.as_of_date,
+                "feature_schema_version": build.feature_schema_version,
+                "feature_values_json": dumps(row.values),
+                "feature_types_json": dumps({spec.name: spec.kind for spec in build.specs}),
+                "source_measurement_ids_json": dumps(row.sources),
+                "quality_flags_json": dumps(row.quality_flags),
+                "created_at": now_iso(),
+            }
+            for row in build.rows
+        ]
+        self.db.executemany(
+            "INSERT INTO problem_feature_snapshots (snapshot_id, feedback_run_id, canonical_problem_id, as_of_date, "
+            "feature_schema_version, feature_values_json, feature_types_json, source_measurement_ids_json, "
+            "quality_flags_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                [
+                    row["snapshot_id"],
+                    row["feedback_run_id"],
+                    row["canonical_problem_id"],
+                    row["as_of_date"],
+                    row["feature_schema_version"],
+                    row["feature_values_json"],
+                    row["feature_types_json"],
+                    row["source_measurement_ids_json"],
+                    row["quality_flags_json"],
+                    row["created_at"],
+                ]
+                for row in rows
+            ],
+        )
+
+    def get_feature_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        rows = self.db.query(
+            "SELECT * FROM problem_feature_snapshots WHERE snapshot_id=? ORDER BY canonical_problem_id",
+            (snapshot_id,),
+        )
+        if not rows:
+            return None
+        for row in rows:
+            row["features"] = loads(row.pop("feature_values_json", None), {})
+            row["feature_types"] = loads(row.pop("feature_types_json", None), {})
+            row["source_measurement_ids"] = loads(row.pop("source_measurement_ids_json", None), {})
+            row["quality_flags"] = loads(row.pop("quality_flags_json", None), [])
+        return {"snapshot_id": snapshot_id, "feedback_run_id": rows[0]["feedback_run_id"], "rows": rows}
+
+    def create_dimension_run(self, values: dict[str, Any]) -> None:
+        self.db.insert("dimension_analysis_runs", values)
+
+    def update_dimension_run(self, run_id: str, **fields: Any) -> None:
+        for key in (
+            "parameters",
+            "diagnostics",
+            "feature_quality",
+            "feature_dictionary",
+            "selected_features",
+            "excluded_features",
+            "configuration",
+        ):
+            if key in fields:
+                fields[f"{key}_json"] = dumps(fields.pop(key))
+        if not fields:
+            return
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        self.db.execute(
+            f"UPDATE dimension_analysis_runs SET {assignments} WHERE run_id=?",
+            [*fields.values(), run_id],
+        )
+
+    def get_dimension_run(self, run_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one("SELECT * FROM dimension_analysis_runs WHERE run_id=?", (run_id,))
+        if not row:
+            return None
+        row["parameters"] = loads(row.pop("parameters_json", None), {})
+        row["diagnostics"] = loads(row.pop("diagnostics_json", None), {})
+        row["feature_quality"] = loads(row.pop("feature_quality_json", None), [])
+        row["feature_dictionary"] = loads(row.pop("feature_dictionary_json", None), [])
+        row["selected_features"] = loads(row.pop("selected_features_json", None), [])
+        row["excluded_features"] = loads(row.pop("excluded_features_json", None), [])
+        row["configuration"] = loads(row.pop("configuration_json", None), {})
+        row["definitions"] = self.get_dimension_definitions(run_id)
+        return row
+
+    def list_dimension_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        return self.db.query(
+            "SELECT run_id, method, method_version, method_library_version, input_snapshot_id, feedback_run_id, "
+            "feature_schema_version, status, stage, code_version, created_at, started_at, completed_at, error "
+            "FROM dimension_analysis_runs ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+
+    def find_reusable_dimension_run(
+        self,
+        feedback_run_id: str,
+        feature_schema_version: str,
+        method: str,
+    ) -> dict[str, Any] | None:
+        return self.db.query_one(
+            "SELECT * FROM dimension_analysis_runs WHERE feedback_run_id=? AND feature_schema_version=? "
+            "AND method=? AND status NOT IN ('FAILED', 'REJECTED') ORDER BY created_at DESC LIMIT 1",
+            (feedback_run_id, feature_schema_version, method),
+        )
+
+    def save_dimension_results(
+        self,
+        run_id: str,
+        definitions: list[dict[str, Any]],
+        contributions: list[dict[str, Any]],
+        scores: list[dict[str, Any]],
+        memberships: list[dict[str, Any]],
+        trends: list[dict[str, Any]],
+        equations: list[dict[str, Any]] | None = None,
+    ) -> None:
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM dimension_definitions WHERE run_id=?", (run_id,))
+            conn.execute("DELETE FROM dimension_variable_contributions WHERE run_id=?", (run_id,))
+            conn.execute("DELETE FROM problem_dimension_scores WHERE run_id=?", (run_id,))
+            conn.execute("DELETE FROM problem_dimension_equations WHERE run_id=?", (run_id,))
+            conn.execute("DELETE FROM dimension_problem_membership WHERE run_id=?", (run_id,))
+            conn.execute("DELETE FROM dimension_trends WHERE run_id=?", (run_id,))
+            conn.executemany(
+                "INSERT INTO dimension_definitions (run_id, dimension_id, dimension_number, analyst_name, "
+                "proposed_label, description, business_interpretation, interpretation_status, model_version, "
+                "top_variables_json, representative_problem_ids_json, review_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        item["dimension_id"],
+                        item.get("dimension_number"),
+                        item["analyst_name"],
+                        item.get("proposed_label"),
+                        item.get("description"),
+                        item.get("business_interpretation"),
+                        item.get("interpretation_status", "DRAFT"),
+                        item.get("model_version"),
+                        dumps(item.get("top_variables")),
+                        dumps(item.get("representative_problem_ids")),
+                        item.get("review_status", "DRAFT"),
+                    )
+                    for item in definitions
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO dimension_variable_contributions (run_id, dimension_id, variable_name, category_level, "
+                "contribution, coordinate, direction_summary, rank) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        item["dimension_id"],
+                        item["variable_name"],
+                        item.get("category_level") or "",
+                        item["contribution"],
+                        item.get("coordinate"),
+                        item.get("direction_summary"),
+                        item.get("rank"),
+                    )
+                    for item in contributions
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO problem_dimension_scores (run_id, canonical_problem_id, dimension_id, coordinate, "
+                "relative_squared_coordinate_share_pct, coordinate_rank, contribution_metadata_json, score_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        item["problem_id"],
+                        item["dimension_id"],
+                        item["coordinate"],
+                        item.get("relative_squared_coordinate_share_pct"),
+                        item.get("coordinate_rank"),
+                        dumps(item.get("contribution_metadata")),
+                        item.get("score_status", "OK"),
+                    )
+                    for item in scores
+                ],
+            )
+            if equations:
+                conn.executemany(
+                    "INSERT INTO problem_dimension_equations (run_id, canonical_problem_id, equation_text, "
+                    "number_of_dimensions, coefficient_representation_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            run_id,
+                            item["problem_id"],
+                            item["equation_text"],
+                            item["number_of_dimensions"],
+                            dumps(item.get("coefficient_representation")),
+                            now_iso(),
+                        )
+                        for item in equations
+                    ],
+                )
+            conn.executemany(
+                "INSERT INTO dimension_problem_membership (run_id, canonical_problem_id, dimension_id, membership_type, "
+                "score, margin, is_ambiguous) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        item["problem_id"],
+                        item["dimension_id"],
+                        item["membership_type"],
+                        item["score"],
+                        item.get("margin"),
+                        1 if item.get("is_ambiguous") else 0,
+                    )
+                    for item in memberships
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO dimension_trends (run_id, dimension_id, time_window, metric_name, metric_value, "
+                "denominator, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        item["dimension_id"],
+                        item["time_window"],
+                        item["metric_name"],
+                        item.get("metric_value"),
+                        item.get("denominator"),
+                        item.get("status", "OK"),
+                    )
+                    for item in trends
+                ],
+            )
+
+    def get_dimension_definitions(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM dimension_definitions WHERE run_id=? "
+            "ORDER BY COALESCE(dimension_number, 9999), dimension_id",
+            (run_id,),
+        )
+        for row in rows:
+            row["top_variables"] = loads(row.pop("top_variables_json", None), [])
+            row["representative_problem_ids"] = loads(row.pop("representative_problem_ids_json", None), [])
+        return rows
+
+    def review_dimension(
+        self,
+        run_id: str,
+        dimension_id: str,
+        reviewer: str,
+        decision: str,
+        name: str | None,
+        description: str | None,
+        note: str,
+    ) -> dict[str, Any] | None:
+        existing = self.db.query_one(
+            "SELECT * FROM dimension_definitions WHERE run_id=? AND dimension_id=?",
+            (run_id, dimension_id),
+        )
+        if not existing:
+            return None
+        status_map = {
+            "approve": "APPROVED",
+            "rename": "APPROVED",
+            "reject": "REJECTED",
+            "request_revision": "DRAFT",
+        }
+        fields: dict[str, Any] = {
+            "review_status": status_map[decision],
+            "reviewer": reviewer,
+            "review_note": note,
+            "reviewed_at": now_iso(),
+        }
+        if name:
+            fields["analyst_name"] = name
+        if description is not None:
+            fields["description"] = description
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        self.db.execute(
+            f"UPDATE dimension_definitions SET {assignments} WHERE run_id=? AND dimension_id=?",
+            [*fields.values(), run_id, dimension_id],
+        )
+        self._record_human_review(
+            "problem_dimension",
+            f"{run_id}:{dimension_id}",
+            reviewer,
+            decision,
+            note,
+            original_value=existing.get("analyst_name"),
+            corrected_value=name,
+        )
+        self.audit(
+            reviewer,
+            "dimension_review",
+            "dimension_definition",
+            f"{run_id}:{dimension_id}",
+            {"decision": decision, "note": note},
+        )
+        return self.get_dimension_definitions(run_id) and next(
+            (item for item in self.get_dimension_definitions(run_id) if item["dimension_id"] == dimension_id),
+            None,
+        )
+
+    def publish_dimension_run(self, run_id: str, published_by: str, note: str) -> str:
+        publication_id = f"DPUB-{uuid.uuid4().hex[:16]}"
+        self.db.insert(
+            "dimension_publications",
+            {
+                "publication_id": publication_id,
+                "run_id": run_id,
+                "action": "publish",
+                "published_by": published_by,
+                "note": note,
+                "created_at": now_iso(),
+            },
+        )
+        self.update_dimension_run(run_id, status="PUBLISHED")
+        self.audit(
+            published_by,
+            "dimension_publish",
+            "dimension_run",
+            run_id,
+            {"publication_id": publication_id, "note": note},
+        )
+        return publication_id
+
+    def latest_dimension_publication(self) -> dict[str, Any] | None:
+        publication = self.db.query_one(
+            "SELECT * FROM dimension_publications WHERE action='publish' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        )
+        if not publication:
+            return None
+        run = self.get_dimension_run(publication["run_id"])
+        return {"publication": publication, "run": run} if run else None
+
+    def get_dimension_contributions(self, run_id: str, dimension_id: str | None = None) -> list[dict[str, Any]]:
+        params: list[Any] = [run_id]
+        where = "run_id=?"
+        if dimension_id:
+            where += " AND dimension_id=?"
+            params.append(dimension_id)
+        return self.db.query(
+            f"SELECT * FROM dimension_variable_contributions WHERE {where} ORDER BY dimension_id, rank",
+            params,
+        )
+
+    def get_dimension_scores(self, run_id: str, dimension_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM problem_dimension_scores WHERE run_id=? AND dimension_id=? ORDER BY coordinate DESC",
+            (run_id, dimension_id),
+        )
+        for row in rows:
+            row["contribution_metadata"] = loads(row.pop("contribution_metadata_json", None), {})
+        return rows
+
+    def get_dimension_trends(self, run_id: str, dimension_id: str | None = None) -> list[dict[str, Any]]:
+        params: list[Any] = [run_id]
+        where = "run_id=?"
+        if dimension_id:
+            where += " AND dimension_id=?"
+            params.append(dimension_id)
+        return self.db.query(
+            f"SELECT * FROM dimension_trends WHERE {where} ORDER BY dimension_id, metric_name",
+            params,
+        )
+
+    def get_problem_dimension_scores(self, run_id: str, problem_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT s.*, d.analyst_name, d.description, d.review_status, "
+            "m.membership_type, m.margin, m.is_ambiguous "
+            "FROM problem_dimension_scores s "
+            "LEFT JOIN dimension_definitions d ON d.run_id=s.run_id AND d.dimension_id=s.dimension_id "
+            "LEFT JOIN dimension_problem_membership m ON m.run_id=s.run_id "
+            "AND m.canonical_problem_id=s.canonical_problem_id AND m.dimension_id=s.dimension_id "
+            "WHERE s.run_id=? AND s.canonical_problem_id=? ORDER BY ABS(s.coordinate) DESC",
+            (run_id, problem_id),
+        )
+        for row in rows:
+            row["contribution_metadata"] = loads(row.pop("contribution_metadata_json", None), {})
+        return rows
+
+    def get_dimension_coefficient_matrix(self, run_id: str) -> list[dict[str, Any]]:
+        return self.db.query(
+            "SELECT s.canonical_problem_id AS problem_id, s.dimension_id, s.coordinate AS coefficient, "
+            "s.relative_squared_coordinate_share_pct, s.coordinate_rank, d.dimension_number, "
+            "d.analyst_name AS factor_name, d.proposed_label, d.review_status AS factor_review_status "
+            "FROM problem_dimension_scores s "
+            "LEFT JOIN dimension_definitions d ON d.run_id=s.run_id AND d.dimension_id=s.dimension_id "
+            "WHERE s.run_id=? "
+            "ORDER BY s.canonical_problem_id, COALESCE(d.dimension_number, 9999), s.dimension_id",
+            (run_id,),
+        )
+
+    def get_problem_dimension_profile(self, run_id: str, problem_id: str) -> dict[str, Any] | None:
+        equation = self.db.query_one(
+            "SELECT * FROM problem_dimension_equations WHERE run_id=? AND canonical_problem_id=?",
+            (run_id, problem_id),
+        )
+        scores = self.get_problem_dimension_scores(run_id, problem_id)
+        if not scores and not equation:
+            return None
+        if equation:
+            equation["coefficient_representation"] = loads(
+                equation.pop("coefficient_representation_json", None), []
+            )
+        return {
+            "run_id": run_id,
+            "problem_id": problem_id,
+            "equation": equation,
+            "coefficients": scores,
+        }
+
+    def get_dimension_variables(self, run_id: str, dimension_id: str | None = None) -> list[dict[str, Any]]:
+        params: list[Any] = [run_id]
+        where = "run_id=?"
+        if dimension_id:
+            where += " AND dimension_id=?"
+            params.append(dimension_id)
+        return self.db.query(
+            f"SELECT * FROM dimension_variable_contributions WHERE {where} ORDER BY dimension_id, rank",
+            params,
+        )
+
+    # ------------------------------------------------- problem portfolio narrative
+    def latest_usable_dimension_run(self, feedback_run_id: str) -> dict[str, Any] | None:
+        return self.db.query_one(
+            "SELECT * FROM dimension_analysis_runs WHERE feedback_run_id=? "
+            "AND status IN ('APPROVED', 'PUBLISHED') "
+            "ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC LIMIT 1",
+            (feedback_run_id,),
+        )
+
+    def get_mds_run(self, mds_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one("SELECT * FROM problem_mds_runs WHERE mds_id=?", (mds_id,))
+        if row:
+            row["params"] = loads(row.pop("params_json", None), {})
+        return row
+
+    def create_portfolio_run(self, values: dict[str, Any]) -> None:
+        self.db.insert("problem_portfolio_analysis_runs", values)
+
+    def update_portfolio_run(self, run_id: str, **fields: Any) -> None:
+        for key in ("parameters", "summary"):
+            if key in fields:
+                fields[f"{key}_json"] = dumps(fields.pop(key))
+        if not fields:
+            return
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        self.db.execute(
+            f"UPDATE problem_portfolio_analysis_runs SET {assignments} WHERE run_id=?",
+            [*fields.values(), run_id],
+        )
+
+    def get_portfolio_run(self, run_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one("SELECT * FROM problem_portfolio_analysis_runs WHERE run_id=?", (run_id,))
+        if not row:
+            return None
+        row["parameters"] = loads(row.pop("parameters_json", None), {})
+        row["summary"] = loads(row.pop("summary_json", None), {})
+        return row
+
+    def list_portfolio_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM problem_portfolio_analysis_runs ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+        for row in rows:
+            row["parameters"] = loads(row.pop("parameters_json", None), {})
+            row["summary"] = loads(row.pop("summary_json", None), {})
+        return rows
+
+    def find_reusable_portfolio_run(
+        self,
+        feedback_run_id: str,
+        dimension_run_id: str,
+        mds_id: str | None,
+        serialization_version: str,
+    ) -> dict[str, Any] | None:
+        return self.db.query_one(
+            "SELECT * FROM problem_portfolio_analysis_runs WHERE feedback_run_id=? AND dimension_run_id=? "
+            "AND COALESCE(mds_id, '')=? AND serialization_version=? AND status IN ('COMPLETED', 'SERIALIZED') "
+            "ORDER BY created_at DESC LIMIT 1",
+            (feedback_run_id, dimension_run_id, mds_id or "", serialization_version),
+        )
+
+    def save_portfolio_serialization(
+        self,
+        *,
+        serialization_id: str,
+        run_id: str,
+        schema_version: str,
+        content_hash: str,
+        payload: dict[str, Any],
+    ) -> None:
+        self.db.execute("DELETE FROM problem_portfolio_serializations WHERE run_id=?", (run_id,))
+        self.db.insert(
+            "problem_portfolio_serializations",
+            {
+                "serialization_id": serialization_id,
+                "run_id": run_id,
+                "schema_version": schema_version,
+                "content_hash": content_hash,
+                "payload_json": dumps(payload),
+                "created_at": now_iso(),
+            },
+        )
+
+    def get_portfolio_serialization(self, run_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT * FROM problem_portfolio_serializations WHERE run_id=? ORDER BY created_at DESC LIMIT 1",
+            (run_id,),
+        )
+        if not row:
+            return None
+        row["payload"] = loads(row.pop("payload_json", None), {})
+        return row
+
+    def get_portfolio_serialization_by_id(self, serialization_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT * FROM problem_portfolio_serializations WHERE serialization_id=?",
+            (serialization_id,),
+        )
+        if not row:
+            return None
+        row["payload"] = loads(row.pop("payload_json", None), {})
+        return row
+
+    def save_factor_nomenclature(self, run_id: str, rows: list[dict[str, Any]]) -> None:
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM problem_factor_nomenclature WHERE run_id=?", (run_id,))
+            conn.executemany(
+                "INSERT INTO problem_factor_nomenclature (run_id, factor_id, dimension_id, dimension_number, "
+                "business_name, description, review_status, source, provisional, aliases_json, top_variables_json, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        item["factor_id"],
+                        item["dimension_id"],
+                        item.get("dimension_number"),
+                        item["business_name"],
+                        item.get("description"),
+                        item["review_status"],
+                        item.get("source", "dimension_definition"),
+                        1 if item.get("provisional") else 0,
+                        dumps(item.get("aliases") or []),
+                        dumps(item.get("top_variables") or []),
+                        now_iso(),
+                    )
+                    for item in rows
+                ],
+            )
+
+    def get_factor_nomenclature(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM problem_factor_nomenclature WHERE run_id=? ORDER BY dimension_number, factor_id",
+            (run_id,),
+        )
+        for row in rows:
+            row["aliases"] = loads(row.pop("aliases_json", None), [])
+            row["top_variables"] = loads(row.pop("top_variables_json", None), [])
+            row["provisional"] = bool(row.get("provisional"))
+        return rows
+
+    def save_factor_profiles(self, run_id: str, rows: list[dict[str, Any]]) -> None:
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM problem_factor_profiles WHERE run_id=?", (run_id,))
+            conn.executemany(
+                "INSERT INTO problem_factor_profiles (run_id, factor_id, dimension_id, dimension_number, eigenvalue, "
+                "explained_variance, cumulative_variance, problem_count, problem_share_pct, mean_abs_coefficient, "
+                "max_abs_coefficient, top_variables_json, top_categories_json, representative_problem_ids_json, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        item["factor_id"],
+                        item["dimension_id"],
+                        item.get("dimension_number"),
+                        item.get("eigenvalue"),
+                        item.get("explained_variance"),
+                        item.get("cumulative_variance"),
+                        item.get("problem_count", 0),
+                        item.get("problem_share_pct"),
+                        item.get("mean_abs_coefficient"),
+                        item.get("max_abs_coefficient"),
+                        dumps(item.get("top_variables") or []),
+                        dumps(item.get("top_categories") or []),
+                        dumps(item.get("representative_problem_ids") or []),
+                        now_iso(),
+                    )
+                    for item in rows
+                ],
+            )
+
+    def get_factor_profiles(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM problem_factor_profiles WHERE run_id=? ORDER BY dimension_number, factor_id",
+            (run_id,),
+        )
+        for row in rows:
+            row["top_variables"] = loads(row.pop("top_variables_json", None), [])
+            row["top_categories"] = loads(row.pop("top_categories_json", None), [])
+            row["representative_problem_ids"] = loads(row.pop("representative_problem_ids_json", None), [])
+        return rows
+
+    def save_mds_relationships(self, run_id: str, rows: list[dict[str, Any]]) -> None:
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM problem_mds_relationships WHERE run_id=?", (run_id,))
+            conn.executemany(
+                "INSERT INTO problem_mds_relationships (run_id, problem_id, neighbor_problem_id, rank, "
+                "euclidean_distance, distance_space, neighbor_title, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        item["problem_id"],
+                        item["neighbor_problem_id"],
+                        item["rank"],
+                        item["euclidean_distance"],
+                        item["distance_space"],
+                        item.get("neighbor_title"),
+                        now_iso(),
+                    )
+                    for item in rows
+                ],
+            )
+
+    def get_mds_relationships(self, run_id: str) -> list[dict[str, Any]]:
+        return self.db.query(
+            "SELECT * FROM problem_mds_relationships WHERE run_id=? ORDER BY problem_id, rank",
+            (run_id,),
+        )
+
+    def save_portfolio_narrative(
+        self,
+        *,
+        narrative_id: str,
+        run_id: str,
+        serialization_id: str,
+        provider: str,
+        model_id: str | None,
+        prompt_version: str,
+        status: str,
+        narrative: dict[str, Any] | None,
+        generation_attempts: int,
+        error: str | None = None,
+    ) -> None:
+        self.db.insert(
+            "problem_portfolio_narratives",
+            {
+                "narrative_id": narrative_id,
+                "run_id": run_id,
+                "serialization_id": serialization_id,
+                "provider": provider,
+                "model_id": model_id,
+                "prompt_version": prompt_version,
+                "status": status,
+                "narrative_json": dumps(narrative),
+                "generation_attempts": generation_attempts,
+                "error": error,
+                "created_at": now_iso(),
+            },
+        )
+
+    def get_latest_portfolio_narrative(self, run_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT * FROM problem_portfolio_narratives WHERE run_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (run_id,),
+        )
+        if not row:
+            return None
+        row["narrative"] = loads(row.pop("narrative_json", None), None)
+        return row
+
+    def save_narrative_validation(
+        self,
+        *,
+        validation_id: str,
+        run_id: str,
+        narrative_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        self.db.insert(
+            "problem_narrative_validation",
+            {
+                "validation_id": validation_id,
+                "run_id": run_id,
+                "narrative_id": narrative_id,
+                "status": result["status"],
+                "checks_json": dumps(result.get("checks") or []),
+                "errors_json": dumps(result.get("errors") or []),
+                "warnings_json": dumps(result.get("warnings") or []),
+                "created_at": now_iso(),
+            },
+        )
+
+    def get_latest_narrative_validation(self, run_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT * FROM problem_narrative_validation WHERE run_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (run_id,),
+        )
+        if not row:
+            return None
+        row["checks"] = loads(row.pop("checks_json", None), [])
+        row["errors"] = loads(row.pop("errors_json", None), [])
+        row["warnings"] = loads(row.pop("warnings_json", None), [])
+        return row
 
     # ---------------------------------------------------------------- admin
     def audit(self, actor: str, action: str, entity_type: str, entity_id: str, detail: dict[str, Any] | None = None) -> None:

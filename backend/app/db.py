@@ -2,11 +2,73 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from datetime import UTC
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any
 
 from .schema import SCHEMA_SQL
+
+# Columns added after the initial PoV schema. `CREATE TABLE IF NOT EXISTS`
+# cannot extend an existing SQLite file, so apply guarded ALTER TABLE
+# statements on startup. This keeps local databases backward compatible.
+COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "feedback_records": [
+        ("feedback_text_original", "TEXT"),
+        ("language_confidence", "REAL"),
+        ("duplicate_group_id", "TEXT"),
+        ("duplicate_type", "TEXT"),
+        ("quality_flags_json", "TEXT"),
+        ("pii_types_json", "TEXT"),
+    ],
+    "extracted_insights": [
+        ("intents_json", "TEXT"),
+        ("aspects_json", "TEXT"),
+        ("technical_root_cause", "TEXT DEFAULT 'unknown'"),
+        ("evidence_verified", "INTEGER DEFAULT 1"),
+        ("field_confidence_json", "TEXT"),
+        ("human_review_status", "TEXT DEFAULT 'unreviewed'"),
+        ("cluster_id", "TEXT"),
+    ],
+    "customer_problems": [
+        ("canonical_description", "TEXT"),
+        ("validation_status", "TEXT DEFAULT 'candidate'"),
+        ("human_review_status", "TEXT DEFAULT 'unreviewed'"),
+        ("discovery_confidence", "REAL"),
+        ("embedding_ref", "TEXT"),
+        ("model_metadata_json", "TEXT"),
+        ("symptoms_json", "TEXT"),
+        ("parent_problem_id", "TEXT"),
+    ],
+    "backlog_items": [
+        ("intended_outcome", "TEXT"),
+        ("customer_intent", "TEXT"),
+        ("target_feature", "TEXT"),
+        ("target_journey", "TEXT"),
+        ("functional_scope", "TEXT"),
+        ("organisational_objective", "TEXT"),
+        ("profile_json", "TEXT"),
+        ("extraction_provider", "TEXT"),
+        ("model_version", "TEXT"),
+    ],
+    "dimension_analysis_runs": [
+        ("selected_features_json", "TEXT"),
+        ("excluded_features_json", "TEXT"),
+        ("configuration_json", "TEXT"),
+    ],
+    "problem_dimension_scores": [
+        ("relative_squared_coordinate_share_pct", "REAL"),
+        ("coordinate_rank", "INTEGER"),
+    ],
+    "dimension_definitions": [
+        ("dimension_number", "INTEGER"),
+        ("proposed_label", "TEXT"),
+        ("business_interpretation", "TEXT"),
+        ("interpretation_status", "TEXT DEFAULT 'DRAFT'"),
+        ("model_version", "TEXT"),
+    ],
+}
 
 
 def _json(value: Any) -> str | None:
@@ -31,6 +93,11 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA_SQL)
+            for table, columns in COLUMN_MIGRATIONS.items():
+                existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                for name, ddl in columns:
+                    if name not in existing:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -115,9 +182,9 @@ class Database:
         return row["value"] if row else None
 
     def set_meta(self, key: str, value: str) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         self.execute(
             "INSERT INTO app_meta(key, value, updated_at) VALUES (?, ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",

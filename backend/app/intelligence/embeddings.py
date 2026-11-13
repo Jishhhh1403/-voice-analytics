@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -89,15 +89,101 @@ class GeminiEmbedder:
         return self.fit_transform(texts)
 
 
+
+
+class SentenceTransformerEmbedder:
+    """Dense embeddings via sentence-transformers when installed.
+
+    Model weights are not bundled; deployments that choose this provider must
+    make the model available locally or allow the library to download it.
+    """
+
+    def __init__(self, model_name: str) -> None:
+        from sentence_transformers import SentenceTransformer  # type: ignore
+
+        self.model = SentenceTransformer(model_name)
+        self.model_name = f"st-{model_name.split('/')[-1]}"
+
+    def fit_transform(self, texts: Sequence[str]) -> np.ndarray:
+        from sklearn.preprocessing import normalize
+
+        vectors = self.model.encode([text or "empty" for text in texts], normalize_embeddings=False)
+        return normalize(np.asarray(vectors, dtype=np.float32))
+
+    def transform(self, texts: Sequence[str]) -> np.ndarray:
+        return self.fit_transform(texts)
+
+
+class VertexEmbedder:
+    """Vertex AI text embeddings over the REST API using application default credentials."""
+
+    def __init__(self, project: str, location: str, model: str) -> None:
+        if not project:
+            raise RuntimeError("BIGQUERY_PROJECT (or GOOGLE_CLOUD_PROJECT) is required for Vertex embeddings")
+        self.project = project
+        self.location = location
+        self.model = model
+        self.model_name = f"vertex-{model}"
+
+    def _access_token(self) -> str:
+        import google.auth  # type: ignore
+        from google.auth.transport.requests import Request  # type: ignore
+
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        credentials.refresh(Request())
+        return credentials.token
+
+    def fit_transform(self, texts: Sequence[str]) -> np.ndarray:
+        import httpx
+        from sklearn.preprocessing import normalize
+
+        url = (
+            f"https://{self.location}-aiplatform.googleapis.com/v1/projects/{self.project}"
+            f"/locations/{self.location}/publishers/google/models/{self.model}:predict"
+        )
+        token = self._access_token()
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), 100):
+            batch = texts[start : start + 100]
+            response = httpx.post(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                json={"instances": [{"content": text or "empty"} for text in batch]},
+                timeout=60,
+            )
+            response.raise_for_status()
+            vectors.extend([item["embeddings"]["values"] for item in response.json().get("predictions", [])])
+        return normalize(np.asarray(vectors, dtype=np.float32))
+
+    def transform(self, texts: Sequence[str]) -> np.ndarray:
+        return self.fit_transform(texts)
+
+
 def build_embedder(settings: Settings, texts: Sequence[str]):
-    if settings.embedding_provider.lower() == "gemini" and settings.gemini_api_key:
-        try:
+    provider = settings.embedding_provider.lower().replace("-", "_")
+    try:
+        if provider == "gemini" and settings.gemini_api_key:
             embedder = GeminiEmbedder(settings.gemini_api_key, settings.llm_model.replace("gemini", "text-embedding"))
             return embedder, embedder.fit_transform(texts)
-        except Exception:
-            pass
+        if provider in {"sentence_transformer", "sentence_transformers", "st"}:
+            embedder = SentenceTransformerEmbedder(settings.sentence_transformer_model)
+            return embedder, embedder.fit_transform(texts)
+        if provider == "vertex":
+            project = settings.bigquery_project or _env("GOOGLE_CLOUD_PROJECT")
+            embedder = VertexEmbedder(project, settings.vertex_location, settings.vertex_embedding_model)
+            return embedder, embedder.fit_transform(texts)
+    except Exception:
+        pass
+    # Deterministic offline fallback; the pipeline never fails because an
+    # optional embedding provider is unavailable.
     embedder = LocalTfidfEmbedder(settings.embedding_dimensions)
     return embedder, embedder.fit_transform(texts)
+
+
+def _env(name: str) -> str:
+    import os
+
+    return os.environ.get(name, "")
 
 
 def cosine_similarity_matrix(vectors: np.ndarray) -> np.ndarray:

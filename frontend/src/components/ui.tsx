@@ -90,8 +90,11 @@ export function relationshipTone(value: string): BadgeTone {
     case "ADDRESSES":
     case "strong":
     case "accepted":
+    case "APPROVED":
+    case "PUBLISHED":
     case "completed":
     case "succeeded":
+    case "full":
       return "green";
     case "PARTIALLY_ADDRESSES":
     case "partial":
@@ -100,10 +103,13 @@ export function relationshipTone(value: string): BadgeTone {
     case "extracting":
       return "blue";
     case "queued":
+    case "WATCH":
       return "amber";
     case "NEEDS_REVIEW":
     case "needs_review":
     case "validating":
+    case "PENDING_REVIEW":
+    case "DRAFT":
       return "amber";
     case "RELATED_BUT_NOT_SOLVING":
     case "weak":
@@ -111,6 +117,9 @@ export function relationshipTone(value: string): BadgeTone {
     case "NO_CLEAR_RELATIONSHIP":
     case "unsupported":
     case "failed":
+    case "REJECTED":
+    case "ESCALATE":
+    case "uncovered":
       return "red";
     case "CONTRADICTS_OR_OUT_OF_SCOPE":
       return "slate";

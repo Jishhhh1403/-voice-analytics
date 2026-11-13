@@ -76,3 +76,24 @@ SELECT
   TIMESTAMP_DIFF(finished_at, started_at, SECOND) AS duration_seconds,
   error
 FROM `${PROJECT_ID}.ops.pipeline_runs`;
+
+CREATE OR REPLACE VIEW `${PROJECT_ID}.intelligence.v_problem_theme_map` AS
+SELECT
+  m.run_id,
+  m.problem_id,
+  p.title,
+  p.journey_node_id,
+  p.lifecycle_status,
+  m.x,
+  m.y,
+  m.display_x,
+  m.display_y,
+  ms.stress,
+  ms.normalized_stress,
+  ms.stress_status,
+  ms.methodology_version
+FROM `${PROJECT_ID}.intelligence.problem_mds_points` AS m
+JOIN `${PROJECT_ID}.intelligence.problem_mds_runs` AS ms
+  ON ms.mds_id = m.mds_id
+LEFT JOIN `${PROJECT_ID}.intelligence.customer_problems` AS p
+  ON p.problem_id = m.problem_id AND p.run_id = m.run_id;

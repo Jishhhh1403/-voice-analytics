@@ -3,8 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 
@@ -65,8 +64,18 @@ def _cluster(taxonomy: Taxonomy, settings: Settings, insights: list[ExtractedIns
 
     texts = [item.reported_problem or "" for item in problem_insights]
     embedder, vectors = build_embedder(settings, texts)
-    for insight, vector in zip(problem_insights, vectors):
+    for insight, vector in zip(problem_insights, vectors, strict=False):
         insight.embedding_json = vector_to_json(vector)
+
+    semantic_nodes = [node for node in taxonomy.nodes if node.node_type in {"feature", "module"}]
+    semantic_vectors = None
+    if semantic_nodes:
+        try:
+            semantic_vectors = embedder.transform(
+                [f"{node.display_name} {' '.join(node.synonyms)} {node.description or ''}".strip() for node in semantic_nodes]
+            )
+        except Exception:
+            semantic_vectors = None
 
     # 1. Deterministic base groups preserve distinct failure modes.
     groups: dict[str, list[int]] = defaultdict(list)
@@ -150,16 +159,28 @@ def _cluster(taxonomy: Taxonomy, settings: Settings, insights: list[ExtractedIns
         statement = original_statement
         if len(members) > 1:
             statement = f"{original_statement} Similar reports: {len(members) - 1}."
+        canonical = f"{aspect_label}: {symptom_label}"[:200]
+        symptoms = sorted({_symptom_label(key, [item for item in members if _symptom_key(item) == key]) for key in symptom_counter})
+        # Discovery confidence reflects evidence breadth, not severity.
+        discovery_confidence = min(
+            0.95,
+            0.35
+            + 0.12 * min(4, len(members))
+            + 0.08 * min(3, len(customers))
+            + (0.05 if len(sources) > 1 else 0.0),
+        )
 
         problem = ProblemDraft(
             problem_id=problem_id,
             signature=signature,
             title=title,
             problem_statement=statement[:400],
+            canonical_description=canonical,
             customer_intent=intent_counter.most_common(1)[0][0] if intent_counter else None,
             aspect=dominant_aspect,
             symptom_category=representative.symptom_category,
             journey_node_id=node_id,
+            symptoms=symptoms,
             evidence_count=len(members),
             distinct_customers=len(customers),
             negative_count=negative_count,
@@ -167,6 +188,11 @@ def _cluster(taxonomy: Taxonomy, settings: Settings, insights: list[ExtractedIns
             last_seen=last_seen,
             cluster_id=cluster_id,
             lifecycle_status="candidate",
+            validation_status="candidate",
+            human_review_status="unreviewed",
+            discovery_confidence=round(discovery_confidence, 3),
+            embedding_ref=f"embedding:{embedder.model_name}:{signature}",
+            model_metadata={"embedding_model": embedder.model_name, "grouping": "journey_node+symptom_key"},
         )
         output.problems.append(problem)
         output.evidence[problem_id] = [(item, feedback[item.feedback_id]) for item in members if item.feedback_id in feedback]
@@ -190,25 +216,47 @@ def _cluster(taxonomy: Taxonomy, settings: Settings, insights: list[ExtractedIns
         )
 
         node = taxonomy.by_id.get(node_id or "")
+        match_text = f"{title} {statement}"
+        normalized = 0.0
+        semantic_score = 0.0
+        if node is None:
+            candidate, raw_score = taxonomy.best_node(match_text)
+            normalized = min(0.99, raw_score / 4.0)
+            if candidate and normalized >= settings.taxonomy_accept_threshold:
+                node = candidate
+            elif semantic_vectors is not None and len(semantic_vectors):
+                similarities = semantic_vectors @ member_vectors[medoid_index]
+                best_index = int(np.argmax(similarities))
+                semantic_score = float(similarities[best_index])
+                if semantic_score >= settings.taxonomy_semantic_threshold:
+                    node = semantic_nodes[best_index]
+                    normalized = max(normalized, min(0.99, semantic_score))
         if node:
+            if semantic_score:
+                normalized = max(normalized, min(0.99, semantic_score))
+            else:
+                _, raw_score = taxonomy.best_node(match_text, allowed={node.node_id})
+                normalized = min(0.99, max(0.72, raw_score / 4.0))
             output.mappings.append(
                 {
                     "mapping_id": _id("MP-", problem_id + node.node_id),
                     "problem_id": problem_id,
                     "node_id": node.node_id,
                     "mapping_type": "primary",
-                    "confidence": 0.92 if dominant_aspect else 0.72,
+                    "confidence": round(normalized, 3),
                     "rationale": (
                         f"Aspect '{dominant_aspect}' maps declaratively to taxonomy node "
                         f"'{taxonomy.path_label(node.node_id)}'."
                     ),
-                    "status": "candidate",
+                    "status": "candidate"
+                    if normalized >= settings.taxonomy_accept_threshold
+                    else "pending_review",
                     "taxonomy_version": taxonomy.version,
                 }
             )
         else:
             parent = taxonomy.module_for(
-                (next((a.node_hint for a in lexicon.ASPECTS if a.key == dominant_aspect), None))
+                next((a.node_hint for a in lexicon.ASPECTS if a.key == dominant_aspect), None)
             )
             output.proposals.append(
                 {
@@ -218,7 +266,12 @@ def _cluster(taxonomy: Taxonomy, settings: Settings, insights: list[ExtractedIns
                     "parent_candidate": parent.node_id if parent else None,
                     "description": f"Potential new category for: {title}. Grounded in customer evidence.",
                     "example_evidence": (original_statement or "")[:300],
-                    "reason": "The problem statement could not be confidently mapped to an existing taxonomy node.",
+                    "confidence": round(normalized, 3),
+                    "reason": (
+                        "The problem statement is near the open-set boundary and needs human taxonomy review."
+                        if normalized >= settings.taxonomy_open_set_threshold
+                        else "The problem statement could not be confidently mapped to an existing taxonomy node."
+                    ),
                 }
             )
 

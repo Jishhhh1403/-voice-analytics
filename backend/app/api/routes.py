@@ -99,7 +99,7 @@ def list_feedback_sources(request: Request) -> list[dict[str, Any]]:
 
 
 @router.post("/feedback-sources", status_code=201)
-async def upload_feedback_source(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_feedback_source(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:  # noqa: B008
     pipeline, _, repo, settings = _svc(request)
     filename = file.filename or "feedback.csv"
     if not filename.lower().endswith(".csv"):
@@ -284,7 +284,7 @@ def backlog_template() -> Response:
 
 
 @router.post("/backlog-uploads", status_code=201)
-async def upload_backlog(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_backlog(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:  # noqa: B008
     _, service, _, _ = _svc(request)
     filename = file.filename or "backlog.csv"
     if not filename.lower().endswith(".csv"):
@@ -398,6 +398,34 @@ def download_validation_report(report_id: str, request: Request, format: str = Q
     )
 
 
+@router.get("/backlog-validation-reports/{report_id}/coverage")
+def get_validation_coverage(report_id: str, request: Request) -> dict[str, Any]:
+    _, _, repo, _ = _svc(request)
+    if not repo.get_report(report_id):
+        raise HTTPException(status_code=404, detail="report not found")
+    matrix = repo.db.query(
+        "SELECT * FROM backlog_coverage_matrix WHERE report_id=? ORDER BY priority_rank", (report_id,)
+    )
+    candidates = repo.db.query(
+        "SELECT * FROM backlog_problem_candidates WHERE report_id=? ORDER BY backlog_id, rank", (report_id,)
+    )
+    for row in candidates:
+        row["reasons"] = _json_value(row.pop("reasons_json", None), {})
+    summary = {
+        "covered": sum(1 for row in matrix if row["coverage_type"] in {"full", "partial"}),
+        "uncovered": sum(1 for row in matrix if row["coverage_type"] == "uncovered"),
+        "needs_review": sum(1 for row in matrix if row["coverage_type"] == "needs_review"),
+        "total": len(matrix),
+    }
+    return {
+        "report_id": report_id,
+        "summary": summary,
+        "matrix": matrix,
+        "candidates": candidates,
+        "note": "Coverage is customer-evidence coverage; organisational priority remains a human decision.",
+    }
+
+
 @router.post("/backlog-validation-reports/{report_id}/review", response_model=MessageResponse)
 def review_validation_report(report_id: str, body: ReportReviewRequest, request: Request) -> MessageResponse:
     _, _, repo, _ = _svc(request)
@@ -405,6 +433,173 @@ def review_validation_report(report_id: str, body: ReportReviewRequest, request:
         raise HTTPException(status_code=404, detail="report not found")
     repo.review_report(report_id, body.reviewer, body.decision, body.note, body.backlog_id)
     return MessageResponse(message="Product-owner review recorded")
+
+
+def _json_value(value: Any, default: Any) -> Any:
+    if value in (None, ""):
+        return default
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return default
+
+
+@router.get("/priorities")
+def list_priorities(request: Request, run_id: str | None = None, limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
+    _, _, repo, _ = _svc(request)
+    if run_id is None:
+        latest = repo.latest_completed_feedback_run()
+        run_id = latest["run_id"] if latest else None
+    if not run_id:
+        return {"run_id": None, "items": [], "methodology_version": None}
+    rows = repo.db.query(
+        "SELECT * FROM problem_priority_snapshots WHERE run_id=? ORDER BY rank LIMIT ?", (run_id, limit)
+    )
+    items = []
+    for row in rows:
+        row["escalation_reasons"] = _json_value(row.pop("escalation_reasons_json", None), [])
+        row["missing_metrics"] = _json_value(row.pop("missing_metrics_json", None), [])
+        row["supporting_evidence"] = _json_value(row.pop("supporting_evidence_json", None), {})
+        items.append(row)
+    return {
+        "run_id": run_id,
+        "methodology_version": items[0]["methodology_version"] if items else None,
+        "items": items,
+        "note": "Priority is a customer-evidence prioritisation, not an organisational approval decision.",
+    }
+
+
+@router.get("/problems/{problem_id}/priority")
+def get_problem_priority(problem_id: str, request: Request) -> dict[str, Any]:
+    _, _, repo, _ = _svc(request)
+    rows = repo.db.query(
+        "SELECT * FROM problem_priority_snapshots WHERE problem_id=? ORDER BY calculated_at DESC LIMIT 1",
+        (problem_id,),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="priority snapshot not found")
+    row = rows[0]
+    row["escalation_reasons"] = _json_value(row.pop("escalation_reasons_json", None), [])
+    row["missing_metrics"] = _json_value(row.pop("missing_metrics_json", None), [])
+    row["supporting_evidence"] = _json_value(row.pop("supporting_evidence_json", None), {})
+    return row
+
+
+@router.get("/problem-map")
+def get_problem_map(request: Request, run_id: str | None = None) -> dict[str, Any]:
+    pipeline, _, _, _ = _svc(request)
+    return pipeline.mds.payload(run_id)
+
+
+@router.post("/problem-map/recompute", response_model=None)
+def recompute_problem_map(request: Request, run_id: str | None = None) -> dict[str, Any]:
+    pipeline, _, _, _ = _svc(request)
+    return pipeline.mds.recompute(run_id)
+
+
+@router.get("/problem-map/{problem_id}")
+def get_problem_map_theme(problem_id: str, request: Request) -> dict[str, Any]:
+    pipeline, _, repo, _ = _svc(request)
+    problem = repo.get_problem(problem_id)
+    if not problem:
+        raise HTTPException(status_code=404, detail="problem not found")
+    payload = pipeline.mds.payload(problem["run_id"])
+    theme = next((item for item in payload.get("themes", []) if item["problem_id"] == problem_id), None)
+    if theme is None:
+        raise HTTPException(status_code=404, detail="theme map point not found")
+    return {
+        "run_id": payload["run_id"],
+        "status": payload["status"],
+        "theme": theme,
+        "problem": problem,
+        "note": "MDS coordinates are semantic only; business attributes are separate.",
+    }
+
+
+@router.get("/problems/{problem_id}/measurement")
+def get_problem_measurement(problem_id: str, request: Request) -> dict[str, Any]:
+    _, _, repo, _ = _svc(request)
+    latest = repo.db.query_one(
+        "SELECT run_id FROM problem_measurement_snapshots WHERE problem_id=? ORDER BY calculated_at DESC LIMIT 1",
+        (problem_id,),
+    )
+    if not latest:
+        raise HTTPException(status_code=404, detail="measurement not found")
+    run_id = latest["run_id"]
+    snapshots = repo.db.query(
+        "SELECT * FROM problem_measurement_snapshots WHERE problem_id=? AND run_id=? ORDER BY metric_name",
+        (problem_id, run_id),
+    )
+    for row in snapshots:
+        row["dimensions"] = _json_value(row.pop("dimensions_json", None), {})
+        row["metadata"] = _json_value(row.pop("metadata_json", None), {})
+    daily = repo.db.query(
+        "SELECT day, metric_name, metric_value, unit, status FROM problem_metrics_daily "
+        "WHERE problem_id=? AND run_id=? ORDER BY day",
+        (problem_id, run_id),
+    )
+    return {"problem_id": problem_id, "run_id": run_id, "snapshots": snapshots, "daily": daily}
+
+
+@router.get("/data-quality")
+def data_quality(request: Request, run_id: str | None = None) -> dict[str, Any]:
+    _, _, repo, _ = _svc(request)
+    if run_id is None:
+        latest = repo.latest_completed_feedback_run()
+        run_id = latest["run_id"] if latest else None
+    if not run_id:
+        return {"run_id": None, "checks": []}
+    rows = repo.db.query("SELECT * FROM data_quality_reports WHERE run_id=? ORDER BY id", (run_id,))
+    for row in rows:
+        row["detail"] = _json_value(row.pop("detail_json", None), {})
+    return {"run_id": run_id, "checks": rows}
+
+
+@router.get("/duplicates")
+def duplicate_report(request: Request, run_id: str | None = None) -> dict[str, Any]:
+    _, _, repo, _ = _svc(request)
+    if run_id is None:
+        latest = repo.latest_completed_feedback_run()
+        run_id = latest["run_id"] if latest else None
+    if not run_id:
+        return {"run_id": None, "items": [], "policy": "linked_not_discarded"}
+    rows = repo.db.query(
+        "SELECT * FROM feedback_duplicate_candidates WHERE run_id=? ORDER BY duplicate_type, detected_at", (run_id,)
+    )
+    for row in rows:
+        row["metadata"] = _json_value(row.pop("metadata_json", None), {})
+    return {"run_id": run_id, "items": rows, "policy": "linked_not_discarded"}
+
+
+@router.get("/diagnostics")
+def diagnostics(request: Request, run_id: str | None = None) -> dict[str, Any]:
+    _, _, repo, _ = _svc(request)
+    if run_id is None:
+        latest = repo.latest_completed_feedback_run()
+        run_id = latest["run_id"] if latest else None
+    if not run_id:
+        return {"run_id": None, "items": []}
+    rows = repo.db.query(
+        "SELECT feedback_id, technical_root_cause, COUNT(*) AS occurrences FROM extracted_insights "
+        "WHERE run_id=? GROUP BY feedback_id, technical_root_cause",
+        (run_id,),
+    )
+    return {
+        "run_id": run_id,
+        "items": rows,
+        "note": "Technical root cause is 'unknown' unless grounded evidence exists; the pipeline never infers it from sentiment.",
+    }
+
+
+@router.get("/problem-relationships")
+def problem_relationships(request: Request, run_id: str | None = None) -> list[dict[str, Any]]:
+    _, _, repo, _ = _svc(request)
+    if run_id is None:
+        latest = repo.latest_completed_feedback_run()
+        run_id = latest["run_id"] if latest else None
+    if not run_id:
+        return []
+    return repo.db.query("SELECT * FROM problem_relationships WHERE run_id=? ORDER BY created_at", (run_id,))
 
 
 @router.get("/admin/overview")

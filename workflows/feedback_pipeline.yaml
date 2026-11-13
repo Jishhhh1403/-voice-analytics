@@ -27,6 +27,8 @@ main:
               - module_b_extract
               - module_c_discover
               - module_d_map
+              - measurement_engine
+              - priority_engine
               - module_e_publish
               - mark_run_complete
     - run_stages:

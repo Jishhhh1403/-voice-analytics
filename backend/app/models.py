@@ -76,5 +76,37 @@ class ValidateBacklogRequest(BaseModel):
     force_rerun: bool = False
 
 
+class ProblemDimensionRunRequest(BaseModel):
+    feedback_run_id: str | None = Field(default=None, description="Completed feedback run to analyse")
+    method: Literal["FAMD"] = "FAMD"
+    max_components: int | None = Field(default=None, ge=1, le=30)
+    force_rerun: bool = False
+
+
+class DimensionReviewRequest(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=120)
+    decision: Literal["approve", "reject", "rename", "request_revision"]
+    name: str | None = Field(default=None, max_length=160)
+    description: str | None = Field(default=None, max_length=4000)
+    note: str = Field(default="", max_length=2000)
+
+
+class DimensionPublishRequest(BaseModel):
+    published_by: str = Field(min_length=1, max_length=120)
+    note: str = Field(default="", max_length=2000)
+
+
+class PortfolioRunRequest(BaseModel):
+    feedback_run_id: str | None = Field(default=None, description="Completed feedback run to analyse")
+    dimension_run_id: str | None = Field(default=None, description="Approved or published factor run")
+    mds_id: str | None = Field(default=None, description="Optional MDS snapshot; defaults to the latest OK snapshot")
+    force_rerun: bool = False
+    generate_narrative: bool = True
+
+
+class PortfolioNarrativeRegenerateRequest(BaseModel):
+    force: bool = False
+
+
 class MessageResponse(BaseModel):
     message: str

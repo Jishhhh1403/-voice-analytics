@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import httpx
@@ -12,25 +12,28 @@ from .contracts import CleanFeedback, ExtractedInsight
 from .extractor import extract_insights
 from .text import normalize_text
 
-PROMPT_VERSION = "extraction-1.0"
+PROMPT_VERSION = "extraction-2.0"
 
 PROMPT = """You are an evidence-first banking customer-feedback analyst.
 Extract sentence-level insights from the supplied redacted customer feedback.
 
 Rules:
-- One feedback may contain multiple independent insights.
-- intent = customer's goal. aspect = banking feature being discussed. problem = reported obstacle.
-- symptom = what happened. Do not infer root cause, blame, or facts not present in the text.
+- One feedback may contain multiple independent insights. Return every independent issue.
+- intent = the customer's goal. aspect = the banking feature or journey step. problem = the reported obstacle.
+- symptom = what the customer observed. Never infer technical root cause, blame, churn risk, or facts not in the text.
+- A reported problem must be traceable to an exact evidence span. If the evidence is ambiguous, return no insight.
 - sentiment is aspect-level and must be one of: positive, negative, neutral, mixed.
 - reported_outcome must be one of: completed, failed, blocked, abandoned, workaround_used, unknown.
-- customer_effort must be one of: low, medium, high, unknown.
-- evidence_span MUST be an exact substring copied from the redacted feedback text.
+- customer_effort must be one of: low, medium, high, unknown. Use unknown when not stated.
+- Preserve the customer's language. Do not translate. Do not rewrite the evidence span.
 - If a clause is positive and has no problem, set reported_problem to null and is_problem false.
+- Missing data must be reported as unknown/null, never guessed or filled with a default.
 - Never invent evidence. Prefer precision over recall.
 Return strict JSON: {"results":[{"feedback_id":string,"insights":[{...}]}]}
-Insight fields: sentence_index(int), customer_intent(string|null), aspect(string|null),
-reported_problem(string|null), reported_symptom(string|null), sentiment(string), emotion(string),
-customer_effort(string), reported_outcome(string), evidence_span(string), is_problem(boolean).
+Insight fields: sentence_index(int), customer_intent(string|null), intents(string[]), aspect(string|null),
+aspects(string[]), reported_problem(string|null), reported_symptom(string|null), sentiment(string), emotion(string),
+customer_effort(string), reported_outcome(string), evidence_span(string), is_problem(boolean),
+field_confidence(object mapping field name to 0-1 confidence).
 """
 
 
@@ -41,11 +44,16 @@ class ExtractionProvider(Protocol):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _id(feedback_id: str, evidence: str, index: int) -> str:
-    return "IN-" + hashlib.sha1(f"{feedback_id}|{evidence}|{index}".encode("utf-8")).hexdigest()[:16]
+    return "IN-" + hashlib.sha1(f"{feedback_id}|{evidence}|{index}".encode()).hexdigest()[:16]
+
+
+def _safe_choice(value: Any, allowed: set[str], default: str) -> str:
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in allowed else default
 
 
 class RuleProvider:
@@ -124,22 +132,37 @@ class LLMProvider:
                     feedback_id=record.feedback_id,
                     sentence_index=sentence_index,
                     customer_intent=item.get("customer_intent"),
+                    intents=[str(value) for value in (item.get("intents") or []) if value],
                     aspect=item.get("aspect"),
+                    aspects=[str(value) for value in (item.get("aspects") or []) if value],
                     journey_node_id=None,
                     reported_problem=item.get("reported_problem"),
                     reported_symptom=item.get("reported_symptom"),
                     symptom_category=None,
-                    sentiment=item.get("sentiment", "neutral"),
+                    sentiment=_safe_choice(item.get("sentiment"), {"positive", "negative", "neutral", "mixed"}, "neutral"),
                     emotion=item.get("emotion") or "none",
-                    customer_effort=item.get("customer_effort", "unknown"),
-                    reported_outcome=item.get("reported_outcome", "unknown"),
+                    customer_effort=_safe_choice(
+                        item.get("customer_effort"), {"low", "medium", "high", "unknown"}, "unknown"
+                    ),
+                    reported_outcome=_safe_choice(
+                        item.get("reported_outcome"),
+                        {"completed", "failed", "blocked", "abandoned", "workaround_used", "unknown"},
+                        "unknown",
+                    ),
                     evidence_span=evidence,
+                    evidence_verified=True,
+                    technical_root_cause="unknown",
                     language=record.language,
                     model_id=self.model_id,
                     prompt_version=PROMPT_VERSION,
                     extraction_timestamp=_now(),
                     extraction_method="llm",
                     confidence=0.7,
+                    field_confidence={
+                        str(key): float(value)
+                        for key, value in (item.get("field_confidence") or {}).items()
+                        if isinstance(key, str) and isinstance(value, int | float)
+                    },
                     is_problem=bool(item.get("is_problem")),
                 )
             )

@@ -58,3 +58,61 @@ export async function download(path: string, filename: string): Promise<void> {
   anchor.remove();
   URL.revokeObjectURL(url);
 }
+
+export function startDimensionRun(payload: {
+  feedback_run_id?: string | null;
+  max_components?: number | null;
+  force_rerun?: boolean;
+}): Promise<{ run_id: string; status: string; stage?: string | null }> {
+  return postJSON("/problem-dimensions/runs?background=true", {
+    feedback_run_id: payload.feedback_run_id ?? null,
+    max_components: payload.max_components ?? null,
+    force_rerun: Boolean(payload.force_rerun),
+  });
+}
+
+export function reviewDimension(
+  runId: string,
+  dimensionId: string,
+  payload: {
+    reviewer: string;
+    decision: "approve" | "reject" | "rename" | "request_revision";
+    name?: string;
+    description?: string;
+    note?: string;
+  },
+) {
+  return postJSON(`/problem-dimensions/runs/${runId}/dimensions/${dimensionId}/review`, payload);
+}
+
+export function publishDimensionRun(runId: string, publishedBy: string, note = "") {
+  return postJSON(`/problem-dimensions/runs/${runId}/publish`, { published_by: publishedBy, note });
+}
+
+export function coefficientMatrixPath(runId: string): string {
+  return `/problem-dimensions/runs/${runId}/coefficients`;
+}
+
+export function coefficientMatrixDownloadPath(runId: string): string {
+  return `/problem-dimensions/runs/${runId}/coefficients.csv`;
+}
+
+export function startPortfolioRun(payload: {
+  feedback_run_id?: string | null;
+  dimension_run_id?: string | null;
+  mds_id?: string | null;
+  force_rerun?: boolean;
+  generate_narrative?: boolean;
+}): Promise<{ run_id: string; status: string; stage?: string | null }> {
+  return postJSON("/problem-portfolio/runs?background=true", {
+    feedback_run_id: payload.feedback_run_id ?? null,
+    dimension_run_id: payload.dimension_run_id ?? null,
+    mds_id: payload.mds_id ?? null,
+    force_rerun: Boolean(payload.force_rerun),
+    generate_narrative: payload.generate_narrative !== false,
+  });
+}
+
+export function regeneratePortfolioNarrative(runId: string, force = true) {
+  return postJSON(`/problem-portfolio/runs/${runId}/narrative/regenerate`, { force });
+}

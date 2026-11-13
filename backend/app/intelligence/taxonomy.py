@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +24,10 @@ class TaxonomyNode:
 
     def to_row(self, version: str) -> dict[str, Any]:
         import json
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         return {
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "node_id": self.node_id,
             "version": version,
             "parent_id": self.parent_id,
@@ -49,7 +50,7 @@ class Taxonomy:
             self.children.setdefault(node.parent_id, []).append(node)
 
     @classmethod
-    def load(cls, path: Path) -> "Taxonomy":
+    def load(cls, path: Path) -> Taxonomy:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         nodes = [
             TaxonomyNode(

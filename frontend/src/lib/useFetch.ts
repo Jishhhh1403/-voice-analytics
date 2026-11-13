@@ -36,6 +36,8 @@ export function useFetch<T>(path: string | null, deps: unknown[] = []): State<T>
       .finally(() => {
         if (current === requestId.current) setLoading(false);
       });
+    // Callers pass the path and every query input as deps; spreading is intentional.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, tick, ...deps]);
 
   return { data, loading, error, reload, setData };

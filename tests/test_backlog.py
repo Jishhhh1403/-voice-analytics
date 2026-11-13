@@ -19,6 +19,7 @@ def test_backlog_parser_quarantines_invalid_rows(app_client):
     assert parsed["valid_rows"] == 3
     assert parsed["invalid_rows"] == 0
     assert all(item["backlog_id"].startswith("BL-T") for item in parsed["items"])
+    assert all("acceptance_criteria_items" in item["structured"] for item in parsed["items"])
 
 
 def test_backlog_validation_produces_report_with_evidence(app_client):
@@ -43,6 +44,9 @@ def test_backlog_validation_produces_report_with_evidence(app_client):
     assert len(findings) >= 3
     assert {finding["backlog_id"] for finding in findings} == {"BL-T001", "BL-T002", "BL-T003"}
     assert report["summary"]["backlog_count"] == 3
+    assert all(
+        isinstance(value, str | int | float) for value in report["report"]["versions"].values()
+    )
     for finding in report["report"]["findings"]:
         assert finding["relationship"] in {
             "ADDRESSES",
@@ -53,6 +57,14 @@ def test_backlog_validation_produces_report_with_evidence(app_client):
             "NEEDS_REVIEW",
         }
         assert 0.0 <= finding["alignment_score"] <= 1.0
+
+    coverage = client.get(f"/api/v1/backlog-validation-reports/{report_id}/coverage")
+    assert coverage.status_code == 200
+    coverage_body = coverage.json()
+    assert coverage_body["summary"]["total"] == 3
+    assert coverage_body["matrix"]
+    assert coverage_body["candidates"]
+    assert coverage_body["note"].startswith("Coverage is customer-evidence coverage")
 
     response = client.get(f"/api/v1/backlog-validation-reports/{report_id}/download", params={"format": "csv"})
     assert response.status_code == 200

@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 COPY backend ./backend
 COPY pipelines ./pipelines
 COPY taxonomy ./taxonomy
+COPY synthetic_banking_app_feedback_15000.csv ./
 COPY synthetic_banking_app_feedback_1800.csv ./
 COPY sample_backlog_upload.csv ./
 

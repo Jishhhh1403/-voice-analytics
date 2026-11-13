@@ -10,6 +10,7 @@ from app.db import Database
 from app.repository import Repository
 from app.services.backlog import BacklogValidationService
 from app.services.pipeline import FeedbackPipelineService
+from app.services.problem_dimensions import ProblemDimensionService
 from app.storage import build_object_store
 
 
@@ -66,15 +67,40 @@ def _run_backlog(args: argparse.Namespace, settings, repo, store) -> int:
     return 0 if run.get("status") == "completed" else 1
 
 
+def _run_dimensions(args: argparse.Namespace, settings, repo) -> int:
+    service = ProblemDimensionService(settings, repo)
+    run_id = service.start(
+        feedback_run_id=args.feedback_run_id,
+        max_components=args.max_components,
+        force_rerun=args.force,
+        run_in_thread=False,
+    )
+    run = service.get_run(run_id)
+    print(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "stage": run["stage"],
+                "status": run["status"],
+                "feedback_run_id": run["feedback_run_id"],
+                "definitions": len(run.get("definitions", [])),
+            }
+        )
+    )
+    return 0 if run["status"] in {"PENDING_REVIEW", "APPROVED", "PUBLISHED"} else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run feedback or backlog processing synchronously (local or Cloud Run Job).")
-    parser.add_argument("--mode", choices=("feedback", "backlog"), default="feedback")
+    parser.add_argument("--mode", choices=("feedback", "backlog", "dimensions"), default="feedback")
     parser.add_argument("--input-uri", default=None, help="gs://, local:// or filesystem CSV path")
     parser.add_argument("--generation", default=None, help="Immutable object generation to read")
     parser.add_argument("--force", action="store_true", help="Ignore an existing completed run")
     parser.add_argument("--stage", default="all", help="Requested stage label recorded by Workflows")
     parser.add_argument("--upload-id", default=None, help="Backlog upload id for --mode backlog")
     parser.add_argument("--validation-run-id", default=None, help="Existing validation run id for --mode backlog")
+    parser.add_argument("--feedback-run-id", default=None, help="Completed feedback run for --mode dimensions")
+    parser.add_argument("--max-components", type=int, default=None, help="Maximum FAMD components to fit")
     args = parser.parse_args(argv)
 
     settings = get_settings()
@@ -85,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.mode == "backlog":
             return _run_backlog(args, settings, repo, store)
+        if args.mode == "dimensions":
+            return _run_dimensions(args, settings, repo)
         pipeline = FeedbackPipelineService(settings, repo, store)
         return _run_feedback(args, settings, repo, pipeline)
     except Exception as exc:  # noqa: BLE001 - CLI boundary

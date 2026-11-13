@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, GitBranch, Layers3, Unplug } from "lucide-react";
+import { ChevronDown, ChevronRight, GitBranch, Layers3 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Badge, Card, EmptyState, ErrorState, PageHeader, Spinner } from "../components/ui";
@@ -161,29 +161,6 @@ export default function JourneyPage() {
             </div>
           </Card>
 
-          <div className="grid grid-2">
-            <Card title="Unmapped problems" hint="Awaiting human taxonomy approval">
-              <div className="unmapped-card">
-                <Unplug size={26} />
-                <div>
-                  <strong>{number(data.unmapped.problem_count)} problems</strong>
-                  <span>{number(data.unmapped.evidence_count)} evidence links could not be confidently mapped.</span>
-                </div>
-                <Link className="btn btn-ghost btn-small" to="/problems?status=candidate">
-                  Review candidates
-                </Link>
-              </div>
-            </Card>
-            <Card title="Mapping policy" hint="Hybrid, human-approved taxonomy">
-              <ul className="policy-list">
-                <li>Declarative aspect-to-node mapping runs first.</li>
-                <li>Lexical and semantic candidates must clear a threshold.</li>
-                <li>New categories are proposals, never silently canonical.</li>
-                <li>Historical mappings retain the taxonomy version used.</li>
-                <li>A problem can have secondary nodes, but needs a primary mapping.</li>
-              </ul>
-            </Card>
-          </div>
         </>
       )}
       {data && data.tree.length === 0 && <EmptyState title="Taxonomy is empty" />}

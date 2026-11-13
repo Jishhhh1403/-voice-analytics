@@ -6,7 +6,7 @@ PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
 REGION="${REGION:-us-central1}"
 PREFIX="${PREFIX:-bci}"
 FEEDBACK_BUCKET="${FEEDBACK_BUCKET:-}"
-SOURCE="${SOURCE:-synthetic_banking_app_feedback_1800.csv}"
+SOURCE="${SOURCE:-synthetic_banking_app_feedback_15000.csv}"
 RUN_ID="${RUN_ID:-RUN-$(date -u +%Y%m%d%H%M%S)}"
 
 if [[ -z "${PROJECT_ID}" || -z "${FEEDBACK_BUCKET}" ]]; then

@@ -4,25 +4,30 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .api.dimension_routes import router as dimension_router
+from .api.factor_routes import router as factor_router
+from .api.portfolio_routes import router as portfolio_router
 from .api.routes import router
 from .config import Settings, get_settings
 from .db import Database
 from .repository import Repository
 from .services.backlog import BacklogValidationService
 from .services.pipeline import FeedbackPipelineService
+from .services.problem_dimensions import ProblemDimensionService
+from .services.problem_portfolio import ProblemPortfolioService
 from .storage import build_object_store
 
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -54,6 +59,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     store = build_object_store(settings)
     pipeline = FeedbackPipelineService(settings, repo, store)
     backlog = BacklogValidationService(settings, repo, store)
+    problem_dimensions = ProblemDimensionService(settings, repo)
+    problem_portfolio = ProblemPortfolioService(settings, repo)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -85,6 +92,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.store = store
     app.state.pipeline = pipeline
     app.state.backlog = backlog
+    app.state.problem_dimensions = problem_dimensions
+    app.state.problem_portfolio = problem_portfolio
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_list,
@@ -94,6 +103,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         expose_headers=["Content-Disposition"],
     )
     app.include_router(router, prefix=settings.api_prefix)
+    app.include_router(dimension_router, prefix=settings.api_prefix)
+    app.include_router(factor_router, prefix=settings.api_prefix)
+    app.include_router(portfolio_router, prefix=settings.api_prefix)
 
     @app.get("/")
     def root() -> dict[str, Any]:

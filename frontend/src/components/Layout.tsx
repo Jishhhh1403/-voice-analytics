@@ -1,14 +1,15 @@
 import {
-  Activity,
   BookOpenCheck,
+  BrainCircuit,
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
   Database,
   Gauge,
   GitBranch,
-  LayoutDashboard,
+  Layers3,
   Menu,
+  Network,
   ShieldAlert,
   Sparkles,
   UploadCloud,
@@ -29,11 +30,12 @@ type Meta = {
 };
 
 const navigation = [
-  { to: "/", label: "Overview", icon: LayoutDashboard },
+  { to: "/", label: "Journey explorer", icon: GitBranch },
   { to: "/problems", label: "Customer problems", icon: ShieldAlert },
-  { to: "/journey", label: "Journey explorer", icon: GitBranch },
+  { to: "/themes", label: "Theme map", icon: Network },
+  { to: "/dimensions", label: "Factor analysis", icon: Layers3 },
+  { to: "/portfolio", label: "Portfolio narrative", icon: BrainCircuit },
   { to: "/backlog", label: "Backlog validation", icon: UploadCloud },
-  { to: "/runs", label: "Pipeline runs", icon: Activity },
 ];
 
 export default function Layout() {

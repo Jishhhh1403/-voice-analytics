@@ -10,12 +10,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 from ..config import Settings
 from ..intelligence import lexicon
 from ..intelligence.contracts import BacklogProfile
-from ..intelligence.embeddings import LocalTfidfEmbedder
+from ..intelligence.retrieval import HybridRetriever
 from ..intelligence.taxonomy import Taxonomy
 from ..intelligence.text import jaccard, token_set, tokenize
 from ..repository import Repository, now_iso
@@ -24,7 +22,19 @@ from ..storage import ObjectStore, build_object_store
 logger = logging.getLogger("bci.backlog")
 
 REQUIRED_COLUMNS = ["backlog_id", "title", "description"]
-OPTIONAL_COLUMNS = ["acceptance_criteria", "product_area", "priority", "business_goal", "source_system"]
+OPTIONAL_COLUMNS = [
+    "acceptance_criteria",
+    "product_area",
+    "priority",
+    "business_goal",
+    "source_system",
+    "intended_outcome",
+    "customer_intent",
+    "target_feature",
+    "target_journey",
+    "functional_scope",
+    "organisational_objective",
+]
 MAX_ROWS = 1000
 
 SYMPTOM_COVERAGE_TERMS: dict[str, list[str]] = {
@@ -122,7 +132,17 @@ def parse_backlog_csv(data: bytes, upload_id: str, settings: Settings) -> dict[s
                 "priority": row.get("priority") or None,
                 "business_goal": row.get("business_goal") or None,
                 "source_system": row.get("source_system") or None,
-                "structured": {"criteria": criteria, "criteria_count": len(criteria)},
+                "intended_outcome": row.get("intended_outcome") or None,
+                "customer_intent": row.get("customer_intent") or None,
+                "target_feature": row.get("target_feature") or None,
+                "target_journey": row.get("target_journey") or None,
+                "functional_scope": row.get("functional_scope") or None,
+                "organisational_objective": row.get("organisational_objective") or None,
+                "structured": {
+                    "criteria": criteria,
+                    "criteria_count": len(criteria),
+                    "acceptance_criteria_items": criteria,
+                },
             }
         )
     return {
@@ -150,6 +170,12 @@ def csv_template() -> str:
             "High",
             "Reduce avoidable payment complaints",
             "Jira",
+            "Customers understand what happens next when a transfer is pending",
+            "transfer_money",
+            "transfer_status",
+            "payments.transfer_status",
+            "Customer-facing status messaging and reference details",
+            "Reduce contact-centre demand and duplicate payment attempts",
         ]
     )
     return output.getvalue()
@@ -221,7 +247,10 @@ class BacklogValidationService:
 
             report_id = "RPT-" + uuid.uuid4().hex[:12]
             report, findings, summary = self._validate(upload, profiles)
+            report["report_id"] = report_id
+            report["validation_run_id"] = run_id
             self.repo.save_report(report_id, upload_id, run_id, summary, report, findings)
+            self.repo.save_coverage_matrix(report_id, report)
             stages[1]["status"] = "succeeded"
             stages[1]["processed"] = len(profiles)
             self.repo.update_validation_run(run_id, "completed", stage_json=stages, report_id=report_id)
@@ -239,7 +268,17 @@ class BacklogValidationService:
         text = " ".join(
             filter(
                 None,
-                [row.get("title"), row.get("description"), row.get("acceptance_criteria"), row.get("product_area")],
+                [
+                    row.get("title"),
+                    row.get("description"),
+                    row.get("acceptance_criteria"),
+                    row.get("product_area"),
+                    row.get("intended_outcome"),
+                    row.get("customer_intent"),
+                    row.get("target_feature"),
+                    row.get("target_journey"),
+                    row.get("functional_scope"),
+                ],
             )
         )
         intents = [item.key for item, _ in lexicon.match_entities(text, lexicon.INTENTS)]
@@ -263,14 +302,24 @@ class BacklogValidationService:
             title=row["title"],
             description=row["description"],
             acceptance_criteria=row.get("acceptance_criteria") or "",
+            acceptance_criteria_items=split_criteria(row.get("acceptance_criteria") or ""),
             product_area=row.get("product_area"),
             priority=row.get("priority"),
             business_goal=row.get("business_goal"),
+            intended_outcome=row.get("intended_outcome"),
+            customer_intent=row.get("customer_intent"),
+            target_feature=row.get("target_feature"),
+            target_journey=row.get("target_journey"),
+            functional_scope=row.get("functional_scope"),
+            organisational_objective=row.get("organisational_objective"),
+            source_system=row.get("source_system"),
             intents=intents,
             aspects=aspects,
             journey_node_id=node.node_id if node else None,
             covered_symptoms=[item.key for item, _ in symptom_matches],
             tokens=tokenize(text),
+            extraction_provider="rules",
+            model_version="rules-v1",
         )
 
     def _validate(self, upload: dict[str, Any], profiles: list[BacklogProfile]) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
@@ -290,21 +339,35 @@ class BacklogValidationService:
 
         problem_texts = [f"{p['title']} {p['problem_statement']}" for p in problems]
         backlog_texts = [
-            f"{p.title} {p.description} {p.acceptance_criteria} {p.product_area or ''}" for p in profiles
+            " ".join(
+                filter(
+                    None,
+                    [
+                        p.title,
+                        p.description,
+                        p.acceptance_criteria,
+                        p.product_area or "",
+                        p.intended_outcome or "",
+                        p.customer_intent or "",
+                        p.target_feature or "",
+                        p.target_journey or "",
+                        p.functional_scope or "",
+                    ],
+                )
+            )
+            for p in profiles
         ]
-        embedder = LocalTfidfEmbedder(self.settings.embedding_dimensions)
-        embedder.fit_transform(problem_texts + backlog_texts)
-        problem_vectors = embedder.transform(problem_texts)
-        backlog_vectors = embedder.transform(backlog_texts)
+        retriever = HybridRetriever(self.settings).fit(problem_texts)
+        retrieval = retriever.score(backlog_texts)
+        problem_vectors = retrieval.scores
 
-        profile_by_id = {item.backlog_id: item for item in profiles}
         evidence_by_problem = self._evidence(run_id)
         findings: list[dict[str, Any]] = []
         backlog_summaries: list[dict[str, Any]] = []
         addressed_problem_ids: set[str] = set()
 
         for index, profile in enumerate(profiles):
-            problem_scores = problem_vectors @ backlog_vectors[index]
+            problem_scores = problem_vectors[index]
             candidates: list[tuple[float, int]] = sorted(
                 [(float(score), problem_index) for problem_index, score in enumerate(problem_scores)],
                 reverse=True,
@@ -339,7 +402,7 @@ class BacklogValidationService:
                     relationship = "NEEDS_REVIEW"
                     uncertainty = uncertainty or "Acceptance criteria cover only part of the reported problem scope."
                 finding = {
-                    "finding_id": "F-" + hashlib.sha1(f"{profile.backlog_id}|{problem['problem_id']}".encode("utf-8")).hexdigest()[:14],
+                    "finding_id": "F-" + hashlib.sha1(f"{profile.backlog_id}|{problem['problem_id']}".encode()).hexdigest()[:14],
                     "backlog_id": profile.backlog_id,
                     "problem_id": problem["problem_id"],
                     "problem_title": problem["title"],
@@ -429,7 +492,13 @@ class BacklogValidationService:
             "alignment": dict(alignment_counts),
             "high_evidence_uncovered_problems": len(uncovered),
             "taxonomy_version": self.taxonomy.version,
-            "embedding_model": embedder.model_name,
+            "embedding_model": retrieval.model_name,
+            "retrieval": {
+                "provider": self.settings.retrieval_provider,
+                "dense_weight": retrieval.dense_weight,
+                "sparse_weight": retrieval.sparse_weight,
+                "reranked": retrieval.reranked,
+            },
             "schema_version": self.settings.schema_version,
         }
         report = {
@@ -456,7 +525,7 @@ class BacklogValidationService:
             ],
             "versions": {
                 "taxonomy": self.taxonomy.version,
-                "embedding_model": embedder.model_name,
+                "embedding_model": retrieval.model_name,
                 "schema": self.settings.schema_version,
                 "code": self.settings.code_version,
             },

@@ -1,6 +1,6 @@
 # GCP migration runbook
 
-This document describes the gap between the local-first PoV and the target GCP architecture from `banking_customer_intelligence_gcp_build_prompt.md`. The repository contains deployment scaffolding, but **no cloud resources were deployed** and the BigQuery analytics adapter is not implemented yet. Treat the Terraform, Workflows and Cloud Build assets as migration-ready scaffolding, not as proof of a cloud deployment.
+This document describes the gap between the local-first PoV and the target GCP architecture from `banking_customer_intelligence_gcp_build_prompt.md`. The repository contains deployment scaffolding and a read-only BigQuery analytics adapter, but **no cloud resources were deployed**. Treat the Terraform, Workflows, Cloud Build and BigQuery adapter assets as migration-ready scaffolding, not as proof of a cloud deployment.
 
 ## Target architecture
 
@@ -19,20 +19,20 @@ Browser
 | Area | Local PoV | GCP target | Status |
 | --- | --- | --- | --- |
 | Raw feedback | Local immutable object store (`data/local/objects`) | GCS with object versioning | GCS adapter exists; not integration-tested |
-| Analytics store | SQLite (`data/local/bci.db`) | BigQuery datasets/tables/views | **Adapter missing**; SQL DDL/views added |
+| Analytics store | SQLite (`data/local/bci.db`) | BigQuery datasets/tables/views | Read-only adapter scaffolded in `backend/app/analytics/`; SQLite remains the write store. DDL 001 + 002 added. |
 | Pipeline orchestration | In-process threads | Cloud Workflows + Cloud Run Jobs | Workflows YAML and worker CLI added; worker still runs whole pipeline |
 | Extraction | Deterministic `rules-v1` | Rules + optional Gemini/OpenAI-compatible | Provider adapter exists |
-| Embeddings | TF-IDF + SVD | Local or Gemini embeddings | Adapter exists |
+| Embeddings | TF-IDF + SVD | Local, sentence-transformers, Gemini or Vertex embeddings | Adapters exist with deterministic fallback |
 | Frontend | Vite dev / nginx | Cloud Run + nginx | Container image added; `BACKEND_URL` templated |
 | Backend | FastAPI + SQLite | Cloud Run + BigQuery | Cloud Run image added; BigQuery gap remains |
 | Secrets | `.env` locally | Secret Manager | Secret resource added; no version created |
 | Auth | No authentication | IAM + application roles | **Missing** |
 | Observability | JSON logs | Cloud Logging/Monitoring | Logs ready; metrics/alerts partial |
-| Tests | 15 pytest tests pass | Unit + integration + contract | GCP integration/contract tests missing |
+| Tests | 20 pytest tests pass | Unit + integration + contract | GCP integration/contract tests missing |
 
 ## Blocking work before a real GCP deployment
 
-1. **Implement a BigQuery repository adapter.** The current `Repository` in `backend/app/repository.py` is SQLite-specific and is used by every service. Production needs a shared interface with two implementations: `SqliteRepository` (local) and `BigQueryRepository` (GCP). Key operations: `create_run`, `stage`, `save_feedback`, `save_quarantine`, `save_run_insights`, `save_problems`, `replace_evidence`, `admin_overview`, `get_problem`, backlog uploads, validation reports and audit log. Use parameterised queries and explicit columns; never `SELECT *`.
+1. **Complete the BigQuery write path.** `backend/app/analytics/` now defines a read interface, a SQLite implementation and a read-only BigQuery implementation. The operational `Repository` in `backend/app/repository.py` remains SQLite-specific. Production still needs durable writes for `create_run`, `stage`, `save_feedback`, `save_quarantine`, `save_run_insights`, `save_problems`, `replace_evidence`, measurement/priority snapshots, backlog uploads, validation reports and audit log. Use parameterised queries and explicit columns; never `SELECT *` for production reads. Set `ANALYTICS_BACKEND=bigquery`, `BIGQUERY_PROJECT` and `BIGQUERY_DATASET_PREFIX` to enable the read adapter.
 2. **Persist shared run state between jobs.** Cloud Run Jobs do not share local SQLite. Until BigQuery state is shared, the Workflows stage calls cannot be independent. The current worker makes the first call perform the full pipeline and later calls reuse the completed run, which preserves the stage contract but does not split the work.
 3. **Backend authentication/authorisation.** Review endpoints currently trust a `reviewer` field in the request body. Add an identity provider (IAP or Firebase Auth) and enforce `REVIEW_ROLES`. Never expose raw evidence to unauthorised users.
 4. **Durable uploads and reports.** Ensure backlog uploads and generated report exports are written to GCS under `backlogs/uploads/<tenant>/<upload_id>/` and `reports/`, and that report downloads stream from GCS rather than local disk.
@@ -87,11 +87,16 @@ Images:
 PROJECT_ID=<PROJECT_ID> FEEDBACK_BUCKET=<FEEDBACK_BUCKET> ./scripts/gcp_upload_and_run.sh
 ```
 
-The script uploads `synthetic_banking_app_feedback_1800.csv`, captures the object generation, and runs the feedback Workflow with `run_id`, `input_uri` and `generation`. The Workflow calls the worker job once per stage; the worker reuses the completed run after the first stage.
+The script uploads `synthetic_banking_app_feedback_15000.csv`, captures the object generation, and runs the feedback Workflow with `run_id`, `input_uri` and `generation`. The Workflow calls the worker job once per stage; the worker reuses the completed run after the first stage.
 
 ## SQL files
 
-- `sql/migrations/001_bigquery_schema.sql` - datasets' tables, partitions and clusters.
+- `sql/migrations/001_bigquery_schema.sql` - base datasets' tables, partitions and clusters.
+- `sql/migrations/002_bigquery_schema_enhancements.sql` - Module A-G additive columns and new tables for duplicates, data quality, measurement, prioritisation, model execution and backlog coverage.
+- `sql/migrations/003_bigquery_mds.sql` - MDS theme-map vectors, runs, points and neighbour tables.
+- `sql/migrations/004_bigquery_problem_dimensions.sql` - exploratory FAMD feature snapshots, runs, scores, definitions, contributions, memberships, trends and publications.
+- `sql/migrations/005_bigquery_problem_dimension_coefficients.sql` - signed FAMD coefficients, factor metadata and equations.
+- `sql/migrations/006_bigquery_problem_portfolio.sql` - portfolio runs, factor nomenclature/profiles, MDS relationships, serializations, narratives and validation.
 - `sql/views/001_dashboard_views.sql` - problem overview, journey summary, sentiment daily, report findings, relationship distribution, run health.
 
 Run manually:
@@ -102,7 +107,7 @@ PROJECT_ID=<PROJECT_ID> REGION=us-central1 ./scripts/gcp_sql.sh
 
 ## Workflows
 
-- `workflows/feedback_pipeline.yaml` - stages `validate_source -> module_a_ingest -> module_b_extract -> module_c_discover -> module_d_map -> module_e_publish -> mark_run_complete`.
+- `workflows/feedback_pipeline.yaml` - stages `validate_source -> module_a_ingest -> module_b_extract -> module_c_discover -> module_d_map -> measurement_engine -> priority_engine -> module_e_publish -> mark_run_complete`.
 - `workflows/backlog_validation.yaml` - stages `module_f_normalise -> module_g_validate`.
 
 Both use `googleapis.run.v1.namespaces.jobs.run` and poll the operation. Input parameters: `region`, `worker_job`, `run_id`/`upload_id`, and so on.
@@ -136,3 +141,11 @@ Then add `frontend/.eslintrc.cjs` extending `eslint:recommended`, `plugin:@types
 - Redact PII before extraction and before evidence is returned by the API.
 - Keep raw GCS object permissions separate from analytics table permissions.
 - Restrict `allUsers` invoker bindings created by the PoV Terraform before production use.
+
+## Measurement and prioritisation in GCP
+
+The measurement and priority engineers write to `problem_metrics_daily`, `problem_measurement_snapshots`, `problem_priority_snapshots` and `scoring_methodology_versions`. Every snapshot carries a status and methodology version. When migrating to BigQuery, preserve `NO_DATA`/`INSUFFICIENT_DATA` rows rather than coalescing them to zero, and keep the scoring methodology version attached to each priority row.
+
+## Guarded advanced analytics
+
+Survival and conjoint analyses remain disabled by default (`ENABLE_SURVIVAL_ANALYSIS=false`, `ENABLE_CONJOINT_ANALYSIS=false`). Their result tables are created by migration 002, but the functions return `NOT_AVAILABLE`/`NOT_APPLICABLE` until event/censoring data or a controlled experimental design is supplied.

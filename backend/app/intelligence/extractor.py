@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from . import lexicon
 from .contracts import CleanFeedback, ExtractedInsight
@@ -9,11 +9,11 @@ from .text import clean_clause, sentence_case, split_clauses, split_sentences, t
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _insight_id(feedback_id: str, evidence: str, aspect: str | None, symptom: str | None) -> str:
-    raw = f"{feedback_id}|{evidence}|{aspect}|{symptom}".encode("utf-8")
+    raw = f"{feedback_id}|{evidence}|{aspect}|{symptom}".encode()
     return "IN-" + hashlib.sha1(raw).hexdigest()[:16]
 
 
@@ -103,9 +103,16 @@ def extract_insights(record: CleanFeedback, model_id: str = "rules-v1") -> list[
                     else:
                         aspect = None
 
-            if aspect is None and symptom is not None and inherited_aspect is not None:
-                if intent is None or inherited_aspect.node_id.split(".")[0] == (intent.node_hint or "").split(".")[0]:
-                    aspect = inherited_aspect
+            if (
+                aspect is None
+                and symptom is not None
+                and inherited_aspect is not None
+                and (
+                    intent is None
+                    or inherited_aspect.node_id.split(".")[0] == (intent.node_hint or "").split(".")[0]
+                )
+            ):
+                aspect = inherited_aspect
 
             if intent is None and aspect is not None:
                 intent = inherited_intent
@@ -134,6 +141,19 @@ def extract_insights(record: CleanFeedback, model_id: str = "rules-v1") -> list[
             )
             confidence = min(0.95, 0.46 + 0.13 * signal_count + (0.06 if is_problem else 0.0))
             node_id = aspect.node_id if aspect else (intent.node_hint if intent else None)
+            intent_keys = [item.key for item, _ in local_intents[:4]]
+            aspect_keys = [item.key for item, _ in local_aspects[:4]]
+            field_confidence = {
+                "customer_intent": round(0.58 if local_intents else 0.30, 3),
+                "aspect": round(0.62 if local_aspects else 0.30, 3),
+                "reported_problem": round(confidence, 3),
+                "reported_symptom": round(0.66 if symptom else 0.25, 3),
+                "sentiment": round(min(0.9, 0.45 + 0.12 * (len(lexicon.POSITIVE.findall(cleaned)) + len(lexicon.NEGATIVE.findall(cleaned)))), 3),
+                "emotion": round(0.55 if lexicon.emotion(cleaned, sentiment_label) != "none" else 0.20, 3),
+                "customer_effort": round(0.52 if lexicon.effort(cleaned) != "unknown" else 0.20, 3),
+                "reported_outcome": round(0.52 if reported_outcome != "unknown" else 0.20, 3),
+                "evidence_span": 1.0,
+            }
 
             insights.append(
                 ExtractedInsight(
@@ -141,7 +161,9 @@ def extract_insights(record: CleanFeedback, model_id: str = "rules-v1") -> list[
                     feedback_id=record.feedback_id,
                     sentence_index=sentence_index,
                     customer_intent=intent.key if intent else None,
+                    intents=intent_keys,
                     aspect=aspect.key if aspect else None,
+                    aspects=aspect_keys,
                     journey_node_id=node_id,
                     reported_problem=statement,
                     reported_symptom=symptom.label if symptom else ("reported issue" if is_problem else None),
@@ -152,11 +174,15 @@ def extract_insights(record: CleanFeedback, model_id: str = "rules-v1") -> list[
                     customer_effort=lexicon.effort(cleaned),  # type: ignore[arg-type]
                     reported_outcome=reported_outcome,  # type: ignore[arg-type]
                     evidence_span=evidence,
+                    evidence_verified=evidence in text,
+                    technical_root_cause="unknown",
                     language=record.language or "en",
                     model_id=model_id,
+                    prompt_version="rules-2.0",
                     extraction_timestamp=_now(),
                     extraction_method="rules",
                     confidence=round(confidence, 3),
+                    field_confidence=field_confidence,
                     is_problem=is_problem,
                 )
             )

@@ -1,6 +1,6 @@
 import { ChevronLeft, ChevronRight, Search, ShieldAlert, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Badge, Card, EmptyState, ErrorState, PageHeader, Spinner } from "../components/ui";
 import { date, label, number } from "../lib/format";
 import type { ProblemListItem } from "../lib/types";

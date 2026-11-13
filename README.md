@@ -2,18 +2,26 @@
 
 Local-first PoV that turns unstructured banking-app customer feedback into evidence-backed customer problems, maps them to a banking journey taxonomy, and validates whether backlog items address the strongest customer evidence.
 
-> The bundled dataset (`synthetic_banking_app_feedback_1800.csv`) is synthetic and generated for software testing. It is not real customer feedback and is not representative of any bank. The UI keeps this warning visible.
+> The bundled dataset (`synthetic_banking_app_feedback_15000.csv`) is synthetic and generated for software testing. It is not real customer feedback and is not representative of any bank. The UI keeps this warning visible.
 
 ## What is implemented
 
-- **Feedback pipeline (Modules A-E)** - ingestion, PII redaction, validation/quarantine, deduplication, immutable object generations, intent/aspect/symptom extraction, sentiment, embeddings, clustering into canonical problems, hybrid taxonomy mapping, publication.
-- **Backlog validation (Modules F-G)** - CSV upload, normalisation, row quarantine, candidate-problem retrieval, relationship/alignment scoring, explainable findings, coverage and acceptance-criteria gaps, report review and CSV/JSON download.
+- **Feedback pipeline (Modules A-E)** - ingestion, Presidio/regex PII redaction, language detection, validation/quarantine, data-quality checks, exact/near/repeat duplicate linking (never discarding complaints), immutable object generations, multi-intent/aspect/symptom extraction, sentiment, configurable embeddings, canonical problem discovery, hybrid taxonomy mapping, measurement and prioritisation, MDS theme mapping, publication.
+- **Problem dimensions (FAMD)** - an auditable, additive layer over canonical problems: versioned features, data-quality gates, missing-data-aware FAMD, optional bootstrap stability and EFA comparison, analyst review/rename/reject gates, immutable publication with republish/rollback, run-specific and latest-published read models, plus signed problem-factor coefficients, squared-coordinate shares and readable equations. It never changes canonical problems, priorities or MDS coordinates.
+- **Problem portfolio narrative** - deterministic, hashed serialization of approved factors, problem coefficients, measurements, priorities and Euclidean MDS relationships; optional grounded Gemini narrative with structured Pydantic output, deterministic validation, append-only regeneration and full persistence. The LLM never becomes the source of truth.
+- **Backlog validation (Modules F-G)** - CSV upload, optional richer profile columns, normalisation, row quarantine, hybrid dense+sparse candidate retrieval, relationship/alignment scoring, explainable findings, coverage matrix, acceptance-criteria gaps, report review and CSV/JSON download. The validator never auto-approves or auto-rejects a backlog.
 - **API** - FastAPI with typed settings, structured JSON logs, correlation IDs, idempotency keys, audit trail and run/stage tracking.
-- **UI** - React + TypeScript: Overview, Problems, Problem detail with evidence, Journey explorer, Backlog validation, Report, Runs/admin.
+- **UI** - React + TypeScript: Journey explorer, Customer problems, Theme map, Problem dimensions, Portfolio narrative, Problem detail with per-evidence signals, impact measurement and published dimension membership, Backlog validation, Validation report.
 - **Runtime** - SQLite + filesystem immutable object store locally; GCS object-store adapter; optional Gemini/OpenAI-compatible extraction and Gemini embeddings.
 - **Delivery** - backend, frontend and batch-worker Dockerfiles, local Docker Compose, tests, and GCP migration scaffolding (SQL, Workflows, Terraform, Cloud Build, scripts).
 
 The local PoV uses SQLite for analytics. BigQuery is the target production analytics store; see [docs/gcp-migration.md](docs/gcp-migration.md) for the exact remaining migration work.
+
+## Documentation
+
+- [Pipeline algorithms](docs/pipeline-algorithms.md) - stage-by-stage algorithm implementation details.
+- [Algorithms and UI calculations](docs/algorithms-and-ui-calculations.md) - how every active UI value is calculated.
+- [Problem portfolio narrative](docs/problem_portfolio.md) - serialization, Gemini contracts, validation and regeneration.
 
 ## Architecture
 
@@ -24,8 +32,8 @@ Browser
        -> Object store (local filesystem now, GCS adapter available)
        -> Analytics store (SQLite now, BigQuery target)
        -> Intelligence layer (rules-v1 now, optional Gemini/OpenAI-compatible)
-       -> Feedback pipeline: validate_source -> ingest -> extract -> discover -> map -> publish
-       -> Backlog pipeline: normalise -> validate -> report
+       -> Feedback pipeline: validate_source -> ingest -> extract -> discover -> map -> measurement -> prioritisation -> publish
+       -> Backlog pipeline: normalise -> hybrid validate -> coverage -> report
 ```
 
 Data flow:
@@ -58,6 +66,7 @@ Run the batch worker directly:
 
 ```bash
 PYTHONPATH=backend python -m pipelines.jobs.run_pipeline --force
+PYTHONPATH=backend python -m pipelines.jobs.run_pipeline --mode dimensions --feedback-run-id RUN-...
 ```
 
 ## Docker Compose
@@ -78,18 +87,23 @@ All routes are under `/api/v1`. Interactive docs: `/docs`.
 | --- | --- |
 | Health/meta | `GET /health`, `GET /meta/source` |
 | Feedback pipeline | `GET/POST /feedback-sources`, `POST /feedback-pipelines`, `GET /feedback-pipelines`, `GET /feedback-pipelines/{run_id}` |
-| Analytics | `GET /feedback/summary`, `GET /feedback/options`, `GET /problems`, `GET /problems/{problem_id}` |
+| Analytics | `GET /feedback/summary`, `GET /feedback/options`, `GET /problems`, `GET /problems/{problem_id}`, `GET /priorities`, `GET /problems/{problem_id}/priority`, `GET /problems/{problem_id}/measurement` |
+| Theme map | `GET /problem-map`, `POST /problem-map/recompute`, `GET /problem-map/{problem_id}` |
+| Problem dimensions | `GET /problem-dimensions/status`, `POST /problem-dimensions/runs`, `GET /problem-dimensions/runs`, `GET /problem-dimensions/runs/{run_id}`, `GET /problem-dimensions/runs/{run_id}/dimensions/{dimension_id}`, `GET /problem-dimensions/runs/{run_id}/problems/{problem_id}`, `GET /problem-dimensions/runs/{run_id}/problems/{problem_id}/profile`, `GET /problem-dimensions/runs/{run_id}/coefficients`, `GET /problem-dimensions/runs/{run_id}/coefficients.csv`, `GET /problem-dimensions/runs/{run_id}/variables`, `GET /problem-dimensions/latest`, `GET /problem-dimensions/latest/dimensions/{dimension_id}`, `GET /problem-dimensions/latest/problems/{problem_id}`, `POST /problem-dimensions/runs/{run_id}/dimensions/{dimension_id}/review`, `POST /problem-dimensions/runs/{run_id}/publish` |
+| Factor analysis alias | `GET /factor-analysis/status`, `POST /factor-analysis/runs`, `GET /factor-analysis/runs`, `GET /factor-analysis/runs/{run_id}`, `GET /factor-analysis/runs/{run_id}/coefficients`, `GET /factor-analysis/runs/{run_id}/variables`, `GET /factor-analysis/runs/{run_id}/problems/{problem_id}` |
+| Quality/evidence | `GET /data-quality`, `GET /duplicates`, `GET /diagnostics`, `GET /problem-relationships` |
 | Review | `POST /problems/{problem_id}/review`, `POST /taxonomy/proposals/{id}/review`, `POST /backlog-validation-reports/{id}/review` |
 | Journey/taxonomy | `GET /taxonomy`, `GET /taxonomy/proposals`, `GET /journey` |
 | Backlog | `GET /backlog-template`, `GET/POST /backlog-uploads`, `POST /backlog-uploads/sample`, `POST /backlog-uploads/{id}/validate` |
-| Reports | `GET /backlog-validation-runs/{run_id}`, `GET /backlog-validation-reports`, `GET /backlog-validation-reports/{id}`, `GET /backlog-validation-reports/{id}/download?format=csv|json` |
+| Reports | `GET /backlog-validation-runs/{run_id}`, `GET /backlog-validation-reports`, `GET /backlog-validation-reports/{id}`, `GET /backlog-validation-reports/{id}/coverage`, `GET /backlog-validation-reports/{id}/download?format=csv|json` |
 | Admin | `GET /admin/overview` |
 
 Idempotency: pass `Idempotency-Key` on pipeline/validation start requests to make retries safe.
 
 ## Data and configuration
 
-- `synthetic_banking_app_feedback_1800.csv` - primary synthetic feedback dataset (1,800 rows).
+- `synthetic_banking_app_feedback_15000.csv` - primary synthetic feedback dataset (15,000 rows, covers all 62 taxonomy feature nodes).
+- `synthetic_banking_app_feedback_1800.csv` - smaller synthetic fixture (1,800 rows) kept for quick local runs.
 - `sample_backlog_upload.csv` - sample backlog for validation.
 - `taxonomy/banking_taxonomy_v1.yaml` - versioned banking journey taxonomy.
 - `data/local/` - local SQLite database and immutable object store. Runtime data is gitignored.
@@ -100,12 +114,15 @@ Provider modes:
 - `EXTRACTION_PROVIDER=rules` (default, deterministic, no API key)
 - `EXTRACTION_PROVIDER=gemini` with `GEMINI_API_KEY`
 - `EXTRACTION_PROVIDER=openai_compatible` with `OPENAI_BASE_URL`/`OPENAI_MODEL` (for example Ollama)
-- `EMBEDDING_PROVIDER=local` (TF-IDF + SVD) or `gemini`
+- `EMBEDDING_PROVIDER=local` (TF-IDF + SVD), `sentence_transformer`, `gemini` or `vertex`
+- `PII_PROVIDER=regex`, `presidio` or `hybrid` (Presidio is optional; any failure falls back to regex)
+- `LANGUAGE_DETECTION_PROVIDER=heuristic`, `langdetect` or `fasttext`
+- `ANALYTICS_BACKEND=sqlite` (default) or `bigquery` (read-only adapter; SQLite remains the write store)
 
 ## Testing
 
 ```bash
-make test                 # pytest: ingestion, extraction, pipeline, API, backlog/report
+make test                 # pytest: ingestion, intelligence modules, pipeline, API, backlog/report
 cd frontend && npm run build
 ```
 
@@ -140,4 +157,4 @@ Read [docs/gcp-migration.md](docs/gcp-migration.md) before deploying. **No cloud
 
 
 source .venv/bin/activate
-PYTHONPATH=backend python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+PYTHONPATH=backend python -m uvicorn app.main:app --app-dir backend --reload --host 127.0.0.1 --port 8000
