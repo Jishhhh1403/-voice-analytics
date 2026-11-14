@@ -144,6 +144,21 @@ class Settings(BaseSettings):
     problem_dimension_nomenclature_prompt_version: str = "dimension-nomenclature-1.0.0"
     problem_dimension_cross_review_prompt_version: str = "dimension-cross-review-1.0.0"
     enable_problem_dimension_efa: bool = False
+
+    enable_factor_prioritisation: bool = True
+    factor_prioritisation_model_version: str = "factor-evidence-v1"
+    factor_prioritisation_weight_prevalence: float = 0.30
+    factor_prioritisation_weight_statistical: float = 0.25
+    factor_prioritisation_weight_representation: float = 0.25
+    factor_prioritisation_weight_semantic: float = 0.20
+    factor_prioritisation_membership_rule_version: str = "famd-membership-1.0.0"
+    factor_prioritisation_membership_min_score: float = 1.0
+    factor_prioritisation_representation_rule_version: str = "famd-row-contribution-1.0.0"
+    factor_prioritisation_representation_multiplier: float = 1.0
+    factor_prioritisation_semantic_rule_version: str = "attribute-coherence-1.0.0"
+    factor_prioritisation_allow_provisional: bool = True
+    factor_prioritisation_min_problem_count: int = 1
+
     enable_measurement_engine: bool = True
     priority_weight_customer_impact: float = 0.30
     priority_weight_business_risk: float = 0.30

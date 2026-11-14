@@ -122,3 +122,25 @@ export function startPortfolioRun(payload: {
 export function regeneratePortfolioNarrative(runId: string, force = true) {
   return postJSON(`/problem-portfolio/runs/${runId}/narrative/regenerate`, { force });
 }
+
+export function startFactorPrioritisationRun(payload: {
+  famd_run_id?: string | null;
+  feedback_run_id?: string | null;
+  weights?: Record<string, number> | null;
+  force_rerun?: boolean;
+}): Promise<{ run_id: string; status: string }> {
+  return postJSON("/factor-prioritisation/runs?background=true", {
+    famd_run_id: payload.famd_run_id ?? null,
+    feedback_run_id: payload.feedback_run_id ?? null,
+    weights: payload.weights ?? null,
+    force_rerun: Boolean(payload.force_rerun),
+  });
+}
+
+export function reviewFactorSemanticAssessment(
+  runId: string,
+  factorId: string,
+  payload: { reviewer: string; decision: "approve" | "reject" | "request_revision"; note?: string },
+) {
+  return postJSON(`/factor-prioritisation/runs/${runId}/factors/${factorId}/semantic-assessment/review`, payload);
+}

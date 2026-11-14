@@ -25,6 +25,8 @@ class RetrievalOutput:
     dense_weight: float
     sparse_weight: float
     reranked: bool = False
+    dense_scores: np.ndarray | None = None
+    sparse_scores: np.ndarray | None = None
 
 
 def _normalise_rows(matrix: np.ndarray) -> np.ndarray:
@@ -67,8 +69,10 @@ class HybridRetriever:
         dense = np.clip(dense_queries @ self.problem_vectors.T, -1.0, 1.0)
         sparse_queries = self.vectorizer.transform([text or "empty" for text in query_texts])
         sparse = cosine_similarity(sparse_queries, self.sparse_matrix)
-        combined = self.dense_weight * _normalise_rows(np.asarray(dense)) + self.sparse_weight * _normalise_rows(
-            np.asarray(sparse)
+        dense_matrix = np.asarray(dense, dtype=np.float32)
+        sparse_matrix = np.asarray(sparse, dtype=np.float32)
+        combined = self.dense_weight * _normalise_rows(dense_matrix) + self.sparse_weight * _normalise_rows(
+            sparse_matrix
         )
         reranked = False
         if (self.settings.reranker_provider or "none").lower() in {"cross_encoder", "cross-encoder"}:
@@ -79,6 +83,8 @@ class HybridRetriever:
             dense_weight=self.dense_weight,
             sparse_weight=self.sparse_weight,
             reranked=reranked,
+            dense_scores=dense_matrix,
+            sparse_scores=sparse_matrix,
         )
 
     def _rerank(self, query_texts: Sequence[str], scores: np.ndarray) -> tuple[np.ndarray, bool]:

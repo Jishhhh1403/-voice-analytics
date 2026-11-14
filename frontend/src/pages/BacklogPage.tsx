@@ -72,8 +72,8 @@ export default function BacklogPage() {
     <div className="page">
       <PageHeader
         eyebrow="Backlog validation"
-        title="Validate a backlog against customer problems"
-        subtitle="Inspect the uploaded backlog and check whether each item is supported by customer evidence. The platform does not reprioritise or edit your backlog."
+        title="Validate a backlog against prioritized factors"
+        subtitle="Match each backlog item lexically and semantically to the factors discovered in factor prioritisation, then rank backlog coverage by factor priority. The platform does not edit your backlog."
       />
 
       {loadingList && <Spinner label="Loading backlog upload…" />}
@@ -103,7 +103,7 @@ export default function BacklogPage() {
                 disabled={working || detail.data.valid_rows === 0}
               >
                 <CheckCircle2 size={14} />
-                {working ? "Validating…" : "Validate against customer problems"}
+                {working ? "Validating…" : "Validate against prioritized factors"}
               </button>
             </div>
           }

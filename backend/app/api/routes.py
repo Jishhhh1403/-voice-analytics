@@ -401,8 +401,11 @@ def download_validation_report(report_id: str, request: Request, format: str = Q
 @router.get("/backlog-validation-reports/{report_id}/coverage")
 def get_validation_coverage(report_id: str, request: Request) -> dict[str, Any]:
     _, _, repo, _ = _svc(request)
-    if not repo.get_report(report_id):
+    stored = repo.get_report(report_id)
+    if not stored:
         raise HTTPException(status_code=404, detail="report not found")
+    report = stored.get("report") or {}
+    basis = report.get("validation_basis") or "canonical_problems"
     matrix = repo.db.query(
         "SELECT * FROM backlog_coverage_matrix WHERE report_id=? ORDER BY priority_rank", (report_id,)
     )
@@ -411,18 +414,35 @@ def get_validation_coverage(report_id: str, request: Request) -> dict[str, Any]:
     )
     for row in candidates:
         row["reasons"] = _json_value(row.pop("reasons_json", None), {})
-    summary = {
-        "covered": sum(1 for row in matrix if row["coverage_type"] in {"full", "partial"}),
-        "uncovered": sum(1 for row in matrix if row["coverage_type"] == "uncovered"),
-        "needs_review": sum(1 for row in matrix if row["coverage_type"] == "needs_review"),
-        "total": len(matrix),
-    }
+    if basis == "factor_prioritisation":
+        factor_coverage = report.get("factor_coverage") or []
+        summary = {
+            "covered_factors": sum(1 for row in factor_coverage if row.get("covered_by_count")),
+            "uncovered_factors": sum(1 for row in factor_coverage if not row.get("covered_by_count")),
+            "total_factors": len(factor_coverage),
+            "total": len(matrix),
+        }
+        note = (
+            "Coverage is factor-prioritisation coverage. High-priority factors with no backlog "
+            "coverage remain explicit gaps; organisational priority is a human decision."
+        )
+    else:
+        factor_coverage = []
+        summary = {
+            "covered": sum(1 for row in matrix if row["coverage_type"] in {"full", "partial"}),
+            "uncovered": sum(1 for row in matrix if row["coverage_type"] == "uncovered"),
+            "needs_review": sum(1 for row in matrix if row["coverage_type"] == "needs_review"),
+            "total": len(matrix),
+        }
+        note = "Coverage is customer-evidence coverage; organisational priority remains a human decision."
     return {
         "report_id": report_id,
+        "validation_basis": basis,
         "summary": summary,
         "matrix": matrix,
         "candidates": candidates,
-        "note": "Coverage is customer-evidence coverage; organisational priority remains a human decision.",
+        "factor_coverage": factor_coverage,
+        "note": note,
     }
 
 

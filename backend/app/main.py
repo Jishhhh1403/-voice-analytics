@@ -12,12 +12,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api.dimension_routes import router as dimension_router
 from .api.factor_routes import router as factor_router
+from .api.mapping_routes import router as mapping_router
 from .api.portfolio_routes import router as portfolio_router
+from .api.prioritisation_routes import router as prioritisation_router
 from .api.routes import router
 from .config import Settings, get_settings
 from .db import Database
 from .repository import Repository
 from .services.backlog import BacklogValidationService
+from .services.factor_prioritisation import FactorPrioritisationService
+from .services.mappings import MappingGraphService
 from .services.pipeline import FeedbackPipelineService
 from .services.problem_dimensions import ProblemDimensionService
 from .services.problem_portfolio import ProblemPortfolioService
@@ -61,6 +65,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     backlog = BacklogValidationService(settings, repo, store)
     problem_dimensions = ProblemDimensionService(settings, repo)
     problem_portfolio = ProblemPortfolioService(settings, repo)
+    factor_prioritisation = FactorPrioritisationService(settings, repo)
+    mappings = MappingGraphService(repo)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -94,6 +100,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.backlog = backlog
     app.state.problem_dimensions = problem_dimensions
     app.state.problem_portfolio = problem_portfolio
+    app.state.factor_prioritisation = factor_prioritisation
+    app.state.mappings = mappings
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_list,
@@ -105,7 +113,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(router, prefix=settings.api_prefix)
     app.include_router(dimension_router, prefix=settings.api_prefix)
     app.include_router(factor_router, prefix=settings.api_prefix)
+    app.include_router(mapping_router, prefix=settings.api_prefix)
     app.include_router(portfolio_router, prefix=settings.api_prefix)
+    app.include_router(prioritisation_router, prefix=settings.api_prefix)
 
     @app.get("/")
     def root() -> dict[str, Any]:

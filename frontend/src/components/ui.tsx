@@ -88,6 +88,7 @@ export function Badge({ children, tone = "neutral" }: { children: ReactNode; ton
 export function relationshipTone(value: string): BadgeTone {
   switch (value) {
     case "ADDRESSES":
+    case "COVERS":
     case "strong":
     case "accepted":
     case "APPROVED":
@@ -97,6 +98,7 @@ export function relationshipTone(value: string): BadgeTone {
     case "full":
       return "green";
     case "PARTIALLY_ADDRESSES":
+    case "PARTIALLY_COVERS":
     case "partial":
     case "running":
     case "ingesting":
@@ -112,9 +114,11 @@ export function relationshipTone(value: string): BadgeTone {
     case "DRAFT":
       return "amber";
     case "RELATED_BUT_NOT_SOLVING":
+    case "RELATED":
     case "weak":
       return "violet";
     case "NO_CLEAR_RELATIONSHIP":
+    case "NOT_COVERED":
     case "unsupported":
     case "failed":
     case "REJECTED":

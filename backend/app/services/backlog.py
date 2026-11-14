@@ -18,6 +18,7 @@ from ..intelligence.taxonomy import Taxonomy
 from ..intelligence.text import jaccard, token_set, tokenize
 from ..repository import Repository, now_iso
 from ..storage import ObjectStore, build_object_store
+from .factor_prioritisation import FactorPrioritisationService
 
 logger = logging.getLogger("bci.backlog")
 
@@ -323,6 +324,465 @@ class BacklogValidationService:
         )
 
     def _validate(self, upload: dict[str, Any], profiles: list[BacklogProfile]) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+        priority_run = self.repo.latest_factor_prioritisation_run()
+        if priority_run:
+            prioritisation = FactorPrioritisationService(self.settings, self.repo).get_run(
+                priority_run["prioritisation_run_id"]
+            )
+            if prioritisation and prioritisation.get("scores"):
+                return self._validate_factors(upload, profiles, prioritisation)
+        return self._validate_problems(upload, profiles)
+
+    def _problems_by_id(self, problem_ids: list[str]) -> dict[str, dict[str, Any]]:
+        if not problem_ids:
+            return {}
+        records: list[dict[str, Any]] = []
+        for start in range(0, len(problem_ids), 500):
+            chunk = problem_ids[start : start + 500]
+            records.extend(
+                self.repo.db.query(
+                    "SELECT p.problem_id, p.title, p.problem_statement, p.journey_node_id, p.evidence_count, "
+                    "p.distinct_customers, (SELECT display_name FROM taxonomy_nodes t "
+                    "WHERE t.node_id=p.journey_node_id ORDER BY t.version DESC LIMIT 1) AS journey_name "
+                    "FROM customer_problems p WHERE p.problem_id IN "
+                    f"({', '.join('?' for _ in chunk)})",
+                    chunk,
+                )
+            )
+        return {str(row["problem_id"]): row for row in records}
+
+    def _factor_text(self, narrative: dict[str, Any], name: str | None, description: str | None) -> str:
+        features = [
+            str(item.get("feature_name"))
+            for item in narrative.get("top_features") or []
+            if item.get("feature_name")
+        ]
+        representative = [
+            str(item)
+            for item in narrative.get("representative_problem_ids") or []
+            if item
+        ][:12]
+        return " ".join(
+            filter(
+                None,
+                [
+                    name,
+                    narrative.get("short_name"),
+                    description,
+                    narrative.get("business_interpretation"),
+                    narrative.get("core_customer_experience"),
+                    narrative.get("journey_scope"),
+                    narrative.get("banking_domain"),
+                    narrative.get("positive_problem_pattern"),
+                    narrative.get("negative_problem_pattern"),
+                    " ".join(features),
+                    " ".join(representative),
+                ],
+            )
+        )
+
+    def _factor_records(
+        self,
+        prioritisation: dict[str, Any],
+        problems: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        famd_run_id = prioritisation["famd_run_id"]
+        narrative_record = self.repo.get_latest_completed_dimension_narrative_serialization(famd_run_id)
+        narrative_by_dimension = {
+            str(item.get("dimension_id")): item
+            for item in ((narrative_record or {}).get("payload") or {}).get("factors") or []
+            if item.get("dimension_id")
+        }
+        assessments = {
+            str(item["factor_id"]): item
+            for item in prioritisation.get("semantic_assessments") or []
+        }
+        factors: list[dict[str, Any]] = []
+        for score in prioritisation.get("scores") or []:
+            dimension_id = str(score["dimension_id"])
+            narrative = narrative_by_dimension.get(dimension_id, {})
+            nomenclature = score.get("explanation", {}).get("nomenclature") or {}
+            name = str(score.get("factor_name") or narrative.get("name") or "").strip() or None
+            description = str(
+                nomenclature.get("description") or narrative.get("description") or ""
+            ).strip() or None
+            text = self._factor_text(narrative, name, description)
+            assessment = assessments.get(str(score["factor_id"]), {})
+            supporting_ids = [
+                str(item)
+                for item in assessment.get("supporting_problem_ids")
+                or assessment.get("semantic_evaluation", {}).get("supporting_problem_ids")
+                or []
+            ]
+            factors.append(
+                {
+                    "factor_id": str(score["factor_id"]),
+                    "dimension_id": dimension_id,
+                    "factor_name": name,
+                    "display_name": name or f"Unnamed factor {score['factor_id']}",
+                    "description": description,
+                    "short_name": narrative.get("short_name")
+                    or nomenclature.get("short_name"),
+                    "priority_rank": score.get("rank"),
+                    "priority_score": score.get("final_priority_score"),
+                    "score_status": score.get("score_status"),
+                    "eligibility_status": score.get("eligibility_status"),
+                    "text": text or f"{score['factor_id']} {dimension_id}",
+                    "supporting_problem_ids": list(dict.fromkeys(supporting_ids)),
+                    "supporting_problems": [
+                        problems[problem_id] for problem_id in supporting_ids if problem_id in problems
+                    ],
+                }
+            )
+        factors.sort(
+            key=lambda item: (
+                item["priority_rank"] is None,
+                item["priority_rank"] if item["priority_rank"] is not None else 9999,
+                item["factor_id"],
+            )
+        )
+        return factors
+
+    def _factor_relationship(self, coverage: float, semantic: float, lexical: float) -> str:
+        if coverage >= 0.45 and (semantic >= 0.30 or lexical >= 0.25):
+            return "COVERS"
+        if coverage >= 0.30:
+            return "PARTIALLY_COVERS"
+        if coverage >= 0.20:
+            return "RELATED"
+        if coverage >= 0.12:
+            return "NEEDS_REVIEW"
+        return "NOT_COVERED"
+
+    def _validate_factors(
+        self,
+        upload: dict[str, Any],
+        profiles: list[BacklogProfile],
+        prioritisation: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+        feedback_run_id = prioritisation.get("feedback_run_id")
+        if not feedback_run_id:
+            raise ValueError("factor prioritisation run is missing its feedback run")
+        problem_ids = sorted(
+            {
+                str(problem_id)
+                for item in prioritisation.get("semantic_assessments") or []
+                for problem_id in item.get("supporting_problem_ids") or []
+            }
+        )
+        problems = self._problems_by_id(problem_ids)
+        factors = self._factor_records(prioritisation, problems)
+        if not factors:
+            raise ValueError("no factors are available from the latest prioritisation run")
+        if not any(len(item["supporting_problem_ids"]) for item in factors):
+            raise ValueError("the prioritisation run has no supporting problem evidence for its factors")
+
+        backlog_texts = [
+            " ".join(
+                filter(
+                    None,
+                    [
+                        profile.title,
+                        profile.description,
+                        profile.acceptance_criteria,
+                        profile.product_area or "",
+                        profile.intended_outcome or "",
+                        profile.customer_intent or "",
+                        profile.target_feature or "",
+                        profile.target_journey or "",
+                        profile.functional_scope or "",
+                    ],
+                )
+            )
+            for profile in profiles
+        ]
+        factor_texts = [item["text"] for item in factors]
+        retriever = HybridRetriever(self.settings).fit(factor_texts)
+        retrieval = retriever.score(backlog_texts)
+        dense_scores = retrieval.dense_scores if retrieval.dense_scores is not None else retrieval.scores
+        sparse_scores = retrieval.sparse_scores if retrieval.sparse_scores is not None else retrieval.scores
+        total_priority_mass = sum(max(0.0, float(item["priority_score"] or 0.0)) for item in factors)
+
+        findings: list[dict[str, Any]] = []
+        backlog_summaries: list[dict[str, Any]] = []
+        for backlog_index, profile in enumerate(profiles):
+            candidates: list[dict[str, Any]] = []
+            for factor_index, factor in enumerate(factors):
+                semantic = max(0.0, min(1.0, float(dense_scores[backlog_index][factor_index])))
+                sparse = max(0.0, min(1.0, float(sparse_scores[backlog_index][factor_index])))
+                fused = max(0.0, min(1.0, float(retrieval.scores[backlog_index][factor_index])))
+                lexical = jaccard(set(profile.tokens), token_set(factor["text"]))
+                coverage = round(0.5 * semantic + 0.3 * sparse + 0.2 * lexical, 4)
+                relationship = self._factor_relationship(coverage, semantic, lexical)
+                priority_score = max(0.0, float(factor["priority_score"] or 0.0))
+                priority_mass = coverage * priority_score
+                covered_problems = factor["supporting_problems"][:20]
+                rationale = (
+                    f"Embedding similarity {semantic:.3f} (distance {1 - semantic:.3f}), "
+                    f"sparse similarity {sparse:.3f}, lexical similarity {lexical:.3f}. "
+                    f"Factor priority rank {factor['priority_rank'] or 'unranked'} "
+                    f"({priority_score:.2f}/100). "
+                    f"Represented problems: {len(factor['supporting_problem_ids'])}."
+                )
+                uncertainty = None
+                if not factor["factor_name"]:
+                    uncertainty = "The factor has no narrative name yet; coverage is matched on its evidence text."
+                elif str(factor["score_status"]) == "PROVISIONAL":
+                    uncertainty = (
+                        "Factor priority is provisional, so backlog priority coverage inherits that uncertainty."
+                    )
+                finding = {
+                    "finding_id": "FF-"
+                    + hashlib.sha1(f"{profile.backlog_id}|{factor['factor_id']}".encode()).hexdigest()[:14],
+                    "backlog_id": profile.backlog_id,
+                    "problem_id": covered_problems[0]["problem_id"] if covered_problems else None,
+                    "problem_title": covered_problems[0]["title"] if covered_problems else None,
+                    "factor_id": factor["factor_id"],
+                    "factor_name": factor["display_name"],
+                    "dimension_id": factor["dimension_id"],
+                    "factor_priority_rank": factor["priority_rank"],
+                    "factor_priority_score": factor["priority_score"],
+                    "factor_score_status": factor["score_status"],
+                    "relationship": relationship,
+                    "rationale": rationale,
+                    "alignment_score": round(coverage, 4),
+                    "coverage": coverage,
+                    "coverage_pct": round(coverage * 100, 1),
+                    "embedding_similarity": round(semantic, 4),
+                    "embedding_distance": round(1.0 - semantic, 4),
+                    "sparse_similarity": round(sparse, 4),
+                    "lexical_similarity": round(lexical, 4),
+                    "fused_similarity": round(fused, 4),
+                    "priority_weighted_coverage": round(priority_mass, 4),
+                    "supporting_feedback_count": sum(
+                        int(problem.get("evidence_count") or 0) for problem in covered_problems
+                    ),
+                    "covered_problem_count": len(factor["supporting_problem_ids"]),
+                    "covered_problems": covered_problems,
+                    "evidence": [],
+                    "journey_node_id": covered_problems[0].get("journey_node_id")
+                    if covered_problems
+                    else None,
+                    "journey_name": covered_problems[0].get("journey_name")
+                    if covered_problems
+                    else None,
+                    "ac_coverage": coverage,
+                    "ac_gaps": [],
+                    "uncertainty": uncertainty,
+                }
+                candidates.append(finding)
+            candidates.sort(
+                key=lambda item: (
+                    item["priority_weighted_coverage"],
+                    item["coverage"],
+                    -(item["factor_priority_rank"] or 9999),
+                ),
+                reverse=True,
+            )
+            item_findings = [
+                item
+                for item in candidates
+                if item["relationship"] != "NOT_COVERED" or item["coverage"] > 0
+            ][:8]
+            findings.extend(item_findings)
+            covered = [
+                item
+                for item in item_findings
+                if item["relationship"] in {"COVERS", "PARTIALLY_COVERS"}
+            ]
+            covered_priority_mass = sum(
+                item["priority_weighted_coverage"] for item in covered
+            )
+            priority_alignment = (
+                covered_priority_mass / total_priority_mass if total_priority_mass > 0 else 0.0
+            )
+            best = item_findings[0] if item_findings else None
+            covered_factor_ids = {item["factor_id"] for item in covered}
+            covered_problem_ids = {
+                problem_id
+                for factor in factors
+                if factor["factor_id"] in covered_factor_ids
+                for problem_id in factor["supporting_problem_ids"]
+            }
+            coverage_values = [item["coverage"] for item in covered]
+            overall_alignment = "unsupported"
+            if any(item["relationship"] == "COVERS" for item in covered):
+                overall_alignment = (
+                    "strong"
+                    if priority_alignment >= 0.25
+                    and (best and (best["factor_priority_rank"] or 9999) <= 6)
+                    else "partial"
+                )
+            elif covered:
+                overall_alignment = "partial"
+            elif any(
+                item["relationship"] in {"RELATED", "NEEDS_REVIEW"} for item in item_findings
+            ):
+                overall_alignment = "weak"
+            backlog_summaries.append(
+                {
+                    "backlog_id": profile.backlog_id,
+                    "title": profile.title,
+                    "description": profile.description,
+                    "product_area": profile.product_area,
+                    "priority": profile.priority,
+                    "business_goal": profile.business_goal or "NOT_PROVIDED",
+                    "journey_node_id": profile.journey_node_id,
+                    "journey_name": self.taxonomy.by_id[profile.journey_node_id].display_name
+                    if profile.journey_node_id in self.taxonomy.by_id
+                    else "UNMAPPED",
+                    "overall_alignment": overall_alignment,
+                    "best_finding": best,
+                    "best_factor": best,
+                    "priority_alignment_score": round(priority_alignment, 4),
+                    "priority_alignment_pct": round(priority_alignment * 100, 1),
+                    "covered_factor_count": len(covered),
+                    "covered_factor_ids": sorted(covered_factor_ids),
+                    "highest_priority_factor_rank": min(
+                        (item["factor_priority_rank"] or 9999 for item in covered),
+                        default=None,
+                    ),
+                    "covered_problem_count": len(covered_problem_ids),
+                    "covered_problem_ids": sorted(covered_problem_ids)[:50],
+                    "embedding_distance": min(
+                        (item["embedding_distance"] for item in item_findings), default=None
+                    ),
+                    "factor_coverage_pct": round(
+                        len(covered) / len(factors) * 100, 1
+                    ),
+                    "ac_coverage": round(
+                        sum(coverage_values) / len(coverage_values), 4
+                    )
+                    if coverage_values
+                    else 0.0,
+                    "ac_gap_count": max(0, len(factors) - len(covered)),
+                    "findings": item_findings,
+                    "customer_evidence_alignment_note": (
+                        "Factor coverage only. Organisational priority is represented by the factor "
+                        "prioritisation score; delivery cost, regulatory obligations and strategic value "
+                        "are not inferred from customer text."
+                    ),
+                }
+            )
+
+        backlog_summaries.sort(
+            key=lambda item: (
+                -item["priority_alignment_score"],
+                -(item["best_finding"]["coverage"] if item["best_finding"] else 0.0),
+                item["backlog_id"],
+            )
+        )
+        for rank, item in enumerate(backlog_summaries, start=1):
+            item["backlog_priority_rank"] = rank
+
+        ranked_factors = sorted(
+            factors,
+            key=lambda item: (
+                item["priority_rank"] is None,
+                item["priority_rank"] if item["priority_rank"] is not None else 9999,
+            ),
+        )
+        factor_coverage: list[dict[str, Any]] = []
+        for factor in ranked_factors:
+            matches = [
+                finding
+                for item in backlog_summaries
+                for finding in item["findings"]
+                if finding["factor_id"] == factor["factor_id"]
+            ]
+            covered_matches = [
+                item
+                for item in matches
+                if item["relationship"] in {"COVERS", "PARTIALLY_COVERS"}
+            ]
+            best_match = max(matches, key=lambda item: item["coverage"], default=None)
+            factor_coverage.append(
+                {
+                    "factor_id": factor["factor_id"],
+                    "factor_name": factor["display_name"],
+                    "description": factor["description"],
+                    "priority_rank": factor["priority_rank"],
+                    "priority_score": factor["priority_score"],
+                    "score_status": factor["score_status"],
+                    "eligibility_status": factor["eligibility_status"],
+                    "supporting_problem_count": len(factor["supporting_problem_ids"]),
+                    "supporting_problems": factor["supporting_problems"][:25],
+                    "covered_by_count": len(covered_matches),
+                    "covered_by_backlog_ids": sorted(
+                        {item["backlog_id"] for item in covered_matches}
+                    ),
+                    "best_coverage": best_match["coverage"] if best_match else 0.0,
+                    "best_embedding_distance": best_match["embedding_distance"]
+                    if best_match
+                    else None,
+                    "best_relationship": best_match["relationship"] if best_match else None,
+                }
+            )
+
+        high_priority = [
+            item for item in factor_coverage if (item["priority_rank"] or 9999) <= 5
+        ]
+        uncovered_factors = [item for item in high_priority if item["covered_by_count"] == 0]
+        relation_counts = Counter(item["relationship"] for item in findings)
+        alignment_counts = Counter(item["overall_alignment"] for item in backlog_summaries)
+        summary = {
+            "generated_at": now_iso(),
+            "feedback_run_id": feedback_run_id,
+            "upload_id": upload["upload_id"],
+            "validation_basis": "factor_prioritisation",
+            "canonical_problem_count": len(problems),
+            "factor_count": len(factors),
+            "backlog_count": len(profiles),
+            "findings": len(findings),
+            "relationships": dict(relation_counts),
+            "alignment": dict(alignment_counts),
+            "high_priority_uncovered_factors": len(uncovered_factors),
+            "prioritisation_run_id": prioritisation["prioritisation_run_id"],
+            "famd_run_id": prioritisation["famd_run_id"],
+            "factor_priority_model_version": prioritisation.get("scoring_model_version"),
+            "taxonomy_version": self.taxonomy.version,
+            "embedding_model": retrieval.model_name,
+            "retrieval": {
+                "provider": self.settings.retrieval_provider,
+                "dense_weight": retrieval.dense_weight,
+                "sparse_weight": retrieval.sparse_weight,
+                "reranked": retrieval.reranked,
+            },
+            "schema_version": self.settings.schema_version,
+        }
+        report = {
+            "report_id": None,
+            "upload_id": upload["upload_id"],
+            "filename": upload.get("filename"),
+            "generated_at": summary["generated_at"],
+            "feedback_run_id": feedback_run_id,
+            "validation_basis": "factor_prioritisation",
+            "prioritisation_run_id": prioritisation["prioritisation_run_id"],
+            "famd_run_id": prioritisation["famd_run_id"],
+            "summary": summary,
+            "backlog_items": backlog_summaries,
+            "findings": findings,
+            "factor_coverage": factor_coverage,
+            "uncovered_high_priority_factors": uncovered_factors,
+            "uncovered_high_evidence_problems": [],
+            "versions": {
+                "taxonomy": self.taxonomy.version,
+                "embedding_model": retrieval.model_name,
+                "factor_prioritisation": prioritisation.get("scoring_model_version"),
+                "schema": self.settings.schema_version,
+                "code": self.settings.code_version,
+            },
+            "limitations": [
+                "Coverage is derived only from the supplied customer feedback and backlog text.",
+                "Factor priority represents evidence strength and coherence, not causal or revenue impact.",
+                "Embedding distance is a text-similarity distance only; it is not a business-distance measure.",
+                "High-priority factors with no covered backlog item remain explicit coverage gaps.",
+                "A NEEDS_REVIEW relationship must be resolved by a product owner before it is treated as covered.",
+            ],
+        }
+        return report, findings, summary
+
+    def _validate_problems(self, upload: dict[str, Any], profiles: list[BacklogProfile]) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
         latest_run = self.repo.latest_completed_feedback_run()
         if not latest_run:
             raise ValueError("run a feedback pipeline before validating a backlog")
@@ -676,6 +1136,78 @@ class BacklogValidationService:
         return "unsupported", best
 
     def report_download_rows(self, report: dict[str, Any]) -> list[list[str]]:
+        if report.get("validation_basis") == "factor_prioritisation":
+            header = [
+                "backlog_id",
+                "title",
+                "backlog_priority_rank",
+                "priority_alignment_pct",
+                "covered_factor_count",
+                "factor_id",
+                "factor_name",
+                "factor_priority_rank",
+                "factor_priority_score",
+                "relationship",
+                "coverage_pct",
+                "embedding_similarity",
+                "embedding_distance",
+                "lexical_similarity",
+                "covered_problem_count",
+                "covered_problem_titles",
+                "rationale",
+            ]
+            rows: list[list[str]] = []
+            for item in report.get("backlog_items", []):
+                if not item.get("findings"):
+                    rows.append(
+                        [
+                            item["backlog_id"],
+                            item["title"],
+                            str(item.get("backlog_priority_rank", "")),
+                            str(item.get("priority_alignment_pct", "")),
+                            "0",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "NOT_COVERED",
+                            "0",
+                            "",
+                            "",
+                            "",
+                            "0",
+                            "",
+                            "No factor had enough lexical or semantic overlap with this backlog item.",
+                        ]
+                    )
+                    continue
+                for finding in item["findings"]:
+                    rows.append(
+                        [
+                            item["backlog_id"],
+                            item["title"],
+                            str(item.get("backlog_priority_rank", "")),
+                            str(item.get("priority_alignment_pct", "")),
+                            str(item.get("covered_factor_count", "")),
+                            finding.get("factor_id") or "",
+                            finding.get("factor_name") or "",
+                            str(finding.get("factor_priority_rank") or ""),
+                            str(finding.get("factor_priority_score") or ""),
+                            finding["relationship"],
+                            str(finding.get("coverage_pct", "")),
+                            str(finding.get("embedding_similarity", "")),
+                            str(finding.get("embedding_distance", "")),
+                            str(finding.get("lexical_similarity", "")),
+                            str(finding.get("covered_problem_count", "")),
+                            " | ".join(
+                                problem.get("title") or problem.get("problem_id") or ""
+                                for problem in finding.get("covered_problems") or []
+                            ),
+                            finding.get("rationale") or "",
+                        ]
+                    )
+            return [header, *rows]
+
         header = [
             "backlog_id",
             "title",

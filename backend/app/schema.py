@@ -990,4 +990,91 @@ CREATE TABLE IF NOT EXISTS problem_narrative_validation (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pnv_narrative ON problem_narrative_validation(narrative_id, created_at DESC);
+
+-- ------------------------------------------------ factor evidence prioritisation
+CREATE TABLE IF NOT EXISTS factor_prioritisation_runs (
+    prioritisation_run_id TEXT PRIMARY KEY,
+    famd_run_id TEXT NOT NULL,
+    feedback_run_id TEXT,
+    feature_schema_version TEXT,
+    scoring_model_version TEXT NOT NULL,
+    weight_configuration_json TEXT NOT NULL,
+    membership_rule_version TEXT NOT NULL,
+    representation_rule_version TEXT NOT NULL,
+    semantic_rule_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    stage TEXT,
+    total_factor_count INTEGER NOT NULL DEFAULT 0,
+    eligible_factor_count INTEGER NOT NULL DEFAULT 0,
+    provisional_factor_count INTEGER NOT NULL DEFAULT 0,
+    excluded_factor_count INTEGER NOT NULL DEFAULT 0,
+    summary_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fpr_famd ON factor_prioritisation_runs(famd_run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fpr_status ON factor_prioritisation_runs(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS factor_prioritisation_scores (
+    prioritisation_run_id TEXT NOT NULL,
+    factor_id TEXT NOT NULL,
+    dimension_id TEXT NOT NULL,
+    dimension_number INTEGER,
+    factor_name TEXT,
+    prevalence_score REAL,
+    statistical_importance_score REAL,
+    representation_strength_score REAL,
+    semantic_coherence_score REAL,
+    final_priority_score REAL,
+    evidence_coverage REAL,
+    eligibility_status TEXT NOT NULL,
+    score_status TEXT NOT NULL,
+    rank INTEGER,
+    weights_json TEXT,
+    explanation_json TEXT,
+    calculated_at TEXT NOT NULL,
+    PRIMARY KEY (prioritisation_run_id, factor_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fps_rank ON factor_prioritisation_scores(prioritisation_run_id, rank);
+
+CREATE TABLE IF NOT EXISTS factor_prioritisation_evidence (
+    prioritisation_run_id TEXT NOT NULL,
+    factor_id TEXT NOT NULL,
+    component_name TEXT NOT NULL,
+    component_label TEXT NOT NULL,
+    component_weight REAL,
+    component_score REAL,
+    weighted_contribution REAL,
+    raw_value_json TEXT,
+    normalised_value REAL,
+    calculation_method TEXT NOT NULL,
+    rule_version TEXT NOT NULL,
+    source_table TEXT,
+    assessment_status TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    evidence_reference_json TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (prioritisation_run_id, factor_id, component_name)
+);
+CREATE INDEX IF NOT EXISTS idx_fpe_factor ON factor_prioritisation_evidence(prioritisation_run_id, factor_id);
+
+CREATE TABLE IF NOT EXISTS factor_semantic_assessments (
+    assessment_id TEXT PRIMARY KEY,
+    prioritisation_run_id TEXT NOT NULL,
+    factor_id TEXT NOT NULL,
+    famd_run_id TEXT NOT NULL,
+    semantic_evaluation_json TEXT NOT NULL,
+    supporting_problem_ids_json TEXT,
+    contradictory_problem_ids_json TEXT,
+    assessment_status TEXT NOT NULL,
+    coverage REAL,
+    reviewer_id TEXT,
+    review_status TEXT NOT NULL DEFAULT 'UNREVIEWED',
+    review_note TEXT,
+    reviewed_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fsa_run ON factor_semantic_assessments(prioritisation_run_id, factor_id);
 """

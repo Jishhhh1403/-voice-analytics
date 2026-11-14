@@ -47,6 +47,9 @@ export default function ReportPage() {
   const summary = report.summary;
   const relationships = (summary.relationships || {}) as Record<string, number>;
   const totalFindings = Number(summary.findings || 0);
+  const isFactorReport = report.validation_basis === "factor_prioritisation";
+  const factorCoverage = report.factor_coverage || [];
+  const uncoveredFactors = report.uncovered_high_priority_factors || [];
 
   const downloadFile = async (format: "json" | "csv") => {
     await download(`/backlog-validation-reports/${data.report_id}/download?format=${format}`, `${data.report_id}.${format}`);
@@ -60,8 +63,12 @@ export default function ReportPage() {
       </Link>
       <PageHeader
         eyebrow={`Report ${data.report_id}`}
-        title="Backlog validation report"
-        subtitle={`${data.filename || data.upload_id} · generated ${dateTime(report.generated_at)}`}
+        title={isFactorReport ? "Factor coverage backlog report" : "Backlog validation report"}
+        subtitle={
+          isFactorReport
+            ? `${data.filename || data.upload_id} · prioritized factors · generated ${dateTime(report.generated_at)}`
+            : `${data.filename || data.upload_id} · generated ${dateTime(report.generated_at)}`
+        }
         actions={
           <>
             <button className="btn btn-ghost" onClick={() => downloadFile("csv")}>
@@ -81,27 +88,84 @@ export default function ReportPage() {
         <div className="stat-card tone-accent">
           <span className="stat-label">Backlog items</span>
           <div className="stat-value">{number(summary.backlog_count)}</div>
-          <span className="stat-detail">{number(summary.canonical_problem_count)} canonical problems compared</span>
+          <span className="stat-detail">
+            {isFactorReport ? "Ranked by prioritized factor coverage" : `${number(summary.canonical_problem_count)} canonical problems compared`}
+          </span>
         </div>
         <div className="stat-card">
           <span className="stat-label">Findings</span>
           <div className="stat-value">{number(totalFindings)}</div>
-          <span className="stat-detail">Item-to-problem relationships</span>
+          <span className="stat-detail">
+            {isFactorReport ? "Backlog-to-factor matches" : "Item-to-problem relationships"}
+          </span>
         </div>
         <div className="stat-card tone-warning">
-          <span className="stat-label">High-evidence uncovered</span>
-          <div className="stat-value">{number(summary.high_evidence_uncovered_problems)}</div>
-          <span className="stat-detail">Problems with 5+ mentions</span>
+          <span className="stat-label">{isFactorReport ? "High-priority uncovered" : "High-evidence uncovered"}</span>
+          <div className="stat-value">
+            {number(isFactorReport ? summary.high_priority_uncovered_factors : summary.high_evidence_uncovered_problems)}
+          </div>
+          <span className="stat-detail">
+            {isFactorReport ? "Top-ranked factors with no backlog coverage" : "Problems with 5+ mentions"}
+          </span>
         </div>
         <div className="stat-card">
-          <span className="stat-label">Evidence run</span>
-          <div className="stat-value small mono">{report.feedback_run_id.slice(0, 18)}</div>
-          <span className="stat-detail">Taxonomy v{String(report.versions.taxonomy)}</span>
+          <span className="stat-label">{isFactorReport ? "Priority run" : "Evidence run"}</span>
+          <div className="stat-value small mono">
+            {String(isFactorReport ? summary.prioritisation_run_id : report.feedback_run_id).slice(0, 18)}
+          </div>
+          <span className="stat-detail">
+            {isFactorReport
+              ? `${number(summary.factor_count)} factors compared`
+              : `Taxonomy v${String(report.versions.taxonomy)}`}
+          </span>
         </div>
       </div>
 
+      {isFactorReport && (
+        <Card
+          title="Backlog priority ranking"
+          hint="Ranked by coverage of high-priority factors, then strongest factor match"
+        >
+          <div className="table-wrap">
+            <table className="table compact">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Backlog item</th>
+                  <th>Priority alignment</th>
+                  <th>Factors covered</th>
+                  <th>Best factor</th>
+                  <th>Embedding distance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.backlog_items.map((item) => (
+                  <tr key={item.backlog_id}>
+                    <td>{item.backlog_priority_rank ?? "—"}</td>
+                    <td>
+                      <div className="cell-title">{item.title}</div>
+                      <div className="cell-sub mono">{item.backlog_id}</div>
+                    </td>
+                    <td>{item.priority_alignment_pct !== undefined ? `${item.priority_alignment_pct.toFixed(1)}%` : "—"}</td>
+                    <td>
+                      {item.covered_factor_count ?? 0}
+                      {item.factor_coverage_pct !== undefined ? ` / ${report.summary.factor_count} (${item.factor_coverage_pct.toFixed(0)}%)` : ""}
+                    </td>
+                    <td>{item.best_factor?.factor_name || "—"}</td>
+                    <td>{item.embedding_distance !== null && item.embedding_distance !== undefined ? item.embedding_distance.toFixed(3) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
       <div className="grid grid-2">
-        <Card title="Relationship distribution" hint="Backlog item to customer problem">
+        <Card
+          title="Relationship distribution"
+          hint={isFactorReport ? "Backlog item to prioritized factor" : "Backlog item to customer problem"}
+        >
           <div className="relationship-bars">
             {Object.keys(relationships).length === 0 && <EmptyState title="No relationships recorded" />}
             {Object.entries(relationships)
@@ -157,7 +221,14 @@ export default function ReportPage() {
         </Card>
       </div>
 
-      <Card title="Backlog item findings" hint="Expand any item to inspect supporting evidence and AC gaps">
+      <Card
+        title="Backlog item findings"
+        hint={
+          isFactorReport
+            ? "Expand any item to inspect factor priority, coverage and embedding distance"
+            : "Expand any item to inspect supporting evidence and AC gaps"
+        }
+      >
         <div className="report-items">
           {report.backlog_items.length === 0 && <EmptyState title="No backlog items in this report" />}
           {report.backlog_items.map((item) => (
@@ -169,9 +240,24 @@ export default function ReportPage() {
                   <Badge tone={relationshipTone(item.overall_alignment)}>{label(item.overall_alignment)}</Badge>
                 </div>
                 <div className="report-item-meta">
-                  <span>{item.journey_name}</span>
-                  <span>{Math.round(item.ac_coverage * 100)}% AC coverage</span>
-                  <span>{item.findings.length} findings</span>
+                  {isFactorReport ? (
+                    <>
+                      <span>Priority rank {item.backlog_priority_rank ?? "—"}</span>
+                      <span>{item.priority_alignment_pct ?? 0}% priority alignment</span>
+                      <span>{item.covered_factor_count ?? 0} factors covered</span>
+                      <span>
+                        {item.embedding_distance !== null && item.embedding_distance !== undefined
+                          ? `best distance ${item.embedding_distance.toFixed(3)}`
+                          : "no embedding distance"}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span>{item.journey_name}</span>
+                      <span>{Math.round(item.ac_coverage * 100)}% AC coverage</span>
+                      <span>{item.findings.length} findings</span>
+                    </>
+                  )}
                   <span className="priority">{item.priority || "No source priority"}</span>
                 </div>
               </summary>
@@ -183,53 +269,107 @@ export default function ReportPage() {
                   </p>
                 )}
                 <div className="finding-list">
-                  {item.findings.length === 0 && <EmptyState title="No customer problems matched" />}
-                  {item.findings.map((finding) => (
-                    <article className="finding" key={finding.finding_id}>
-                      <div className="finding-head">
-                        <Badge tone={relationshipTone(finding.relationship)}>{label(finding.relationship)}</Badge>
-                        <Link to={finding.problem_id ? `/problems/${finding.problem_id}` : "#"} className="finding-title">
-                          {finding.problem_title || "No matched problem"}
-                        </Link>
-                        <span className="finding-score">{Math.round(finding.alignment_score * 100)}%</span>
-                      </div>
-                      <p className="finding-rationale">{finding.rationale}</p>
-                      {finding.uncertainty && (
-                        <div className="alert alert-warning compact">
-                          <ShieldAlert size={14} />
-                          {finding.uncertainty}
-                        </div>
-                      )}
-                      {finding.evidence.length > 0 && (
-                        <div className="finding-evidence">
-                          {finding.evidence.map((evidence, index) => (
-                            <blockquote key={`${evidence.feedback_id}-${index}`}>
-                              <Quote size={13} />
-                              <div>
-                                <span>{evidence.evidence_span}</span>
-                                <small>
-                                  {evidence.feedback_id} · {label(evidence.source_type || "")} · {date(evidence.submitted_at)}
-                                  {evidence.rating ? (
-                                    <>
-                                      {" "}
-                                      · <Star size={11} fill="currentColor" /> {evidence.rating}
-                                    </>
-                                  ) : null}
-                                </small>
-                              </div>
-                            </blockquote>
-                          ))}
-                        </div>
-                      )}
-                      {finding.ac_gaps.length > 0 && (
-                        <ul className="ac-gaps">
-                          {finding.ac_gaps.map((gap, index) => (
-                            <li key={index}>{gap}</li>
-                          ))}
-                        </ul>
-                      )}
-                    </article>
-                  ))}
+                  {item.findings.length === 0 && (
+                    <EmptyState
+                      title={isFactorReport ? "No prioritized factors matched" : "No customer problems matched"}
+                    />
+                  )}
+                  {isFactorReport
+                    ? item.findings.map((finding) => (
+                        <article className="finding" key={finding.finding_id}>
+                          <div className="finding-head">
+                            <Badge tone={relationshipTone(finding.relationship)}>{label(finding.relationship)}</Badge>
+                            <strong className="finding-title">{finding.factor_name || "Unnamed factor"}</strong>
+                            <span className="finding-score">{Math.round(finding.coverage_pct ?? 0)}%</span>
+                          </div>
+                          <div className="report-item-meta">
+                            <span>Factor rank {finding.factor_priority_rank ?? "—"}</span>
+                            <span>Priority {(finding.factor_priority_score ?? 0).toFixed(2)}/100</span>
+                            <span>Embedding similarity {(finding.embedding_similarity ?? 0).toFixed(3)}</span>
+                            <span>Embedding distance {(finding.embedding_distance ?? 0).toFixed(3)}</span>
+                            <span>Lexical {(finding.lexical_similarity ?? 0).toFixed(3)}</span>
+                          </div>
+                          <p className="finding-rationale">{finding.rationale}</p>
+                          {finding.uncertainty && (
+                            <div className="alert alert-warning compact">
+                              <ShieldAlert size={14} />
+                              {finding.uncertainty}
+                            </div>
+                          )}
+                          {(finding.covered_problems || []).length > 0 && (
+                            <div className="uncovered-list">
+                              {(finding.covered_problems || []).slice(0, 8).map((problem) => (
+                                <Link
+                                  to={`/problems/${problem.problem_id}`}
+                                  className="uncovered-item"
+                                  key={problem.problem_id}
+                                >
+                                  <div>
+                                    <strong>{problem.title || problem.problem_id}</strong>
+                                    <span>{problem.journey_name || "Unmapped"}</span>
+                                  </div>
+                                  <div className="uncovered-count">
+                                    {problem.evidence_count ?? 0}
+                                    <small>mentions</small>
+                                  </div>
+                                </Link>
+                              ))}
+                              {(finding.covered_problem_count || 0) > 8 && (
+                                <p className="footnote">
+                                  +{(finding.covered_problem_count || 0) - 8} additional represented problems.
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </article>
+                      ))
+                    : item.findings.map((finding) => (
+                        <article className="finding" key={finding.finding_id}>
+                          <div className="finding-head">
+                            <Badge tone={relationshipTone(finding.relationship)}>{label(finding.relationship)}</Badge>
+                            <Link to={finding.problem_id ? `/problems/${finding.problem_id}` : "#"} className="finding-title">
+                              {finding.problem_title || "No matched problem"}
+                            </Link>
+                            <span className="finding-score">{Math.round(finding.alignment_score * 100)}%</span>
+                          </div>
+                          <p className="finding-rationale">{finding.rationale}</p>
+                          {finding.uncertainty && (
+                            <div className="alert alert-warning compact">
+                              <ShieldAlert size={14} />
+                              {finding.uncertainty}
+                            </div>
+                          )}
+                          {finding.evidence.length > 0 && (
+                            <div className="finding-evidence">
+                              {finding.evidence.map((evidence, index) => (
+                                <blockquote key={`${evidence.feedback_id}-${index}`}>
+                                  <Quote size={13} />
+                                  <div>
+                                    <span>{evidence.evidence_span}</span>
+                                    <small>
+                                      {evidence.feedback_id} · {label(evidence.source_type || "")} ·{" "}
+                                      {date(evidence.submitted_at)}
+                                      {evidence.rating ? (
+                                        <>
+                                          {" "}
+                                          · <Star size={11} fill="currentColor" /> {evidence.rating}
+                                        </>
+                                      ) : null}
+                                    </small>
+                                  </div>
+                                </blockquote>
+                              ))}
+                            </div>
+                          )}
+                          {finding.ac_gaps.length > 0 && (
+                            <ul className="ac-gaps">
+                              {finding.ac_gaps.map((gap, index) => (
+                                <li key={index}>{gap}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </article>
+                      ))}
                 </div>
               </div>
             </details>
@@ -237,24 +377,105 @@ export default function ReportPage() {
         </div>
       </Card>
 
+      {isFactorReport && (
+        <Card
+          title="Factor coverage matrix"
+          hint="Backlog coverage against every prioritized factor, with best embedding distance"
+        >
+          <div className="table-wrap">
+            <table className="table compact">
+              <thead>
+                <tr>
+                  <th>Factor rank</th>
+                  <th>Factor</th>
+                  <th>Priority</th>
+                  <th>Status</th>
+                  <th>Represented problems</th>
+                  <th>Covered by</th>
+                  <th>Best coverage</th>
+                  <th>Best distance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {factorCoverage.map((factor) => (
+                  <tr key={factor.factor_id}>
+                    <td>{factor.priority_rank ?? "—"}</td>
+                    <td>
+                      <div className="cell-title">{factor.factor_name}</div>
+                      <div className="cell-sub docs-clamp">{factor.description || "No narrative description"}</div>
+                    </td>
+                    <td>{(factor.priority_score ?? 0).toFixed(2)}</td>
+                    <td>
+                      <Badge tone={factor.score_status === "VALIDATED" ? "green" : "amber"}>
+                        {label(factor.score_status || "UNKNOWN")}
+                      </Badge>
+                    </td>
+                    <td>{factor.supporting_problem_count}</td>
+                    <td>
+                      {factor.covered_by_count}
+                      {factor.covered_by_backlog_ids.length > 0
+                        ? ` · ${factor.covered_by_backlog_ids.join(", ")}`
+                        : ""}
+                    </td>
+                    <td>{Math.round(factor.best_coverage * 100)}%</td>
+                    <td>
+                      {factor.best_embedding_distance !== null && factor.best_embedding_distance !== undefined
+                        ? factor.best_embedding_distance.toFixed(3)
+                        : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
       <div className="grid grid-2">
-        <Card title="High-evidence customer problems not addressed" hint="Backlog coverage gaps">
-          {report.uncovered_high_evidence_problems.length === 0 && (
-            <EmptyState title="No high-evidence gaps found" detail="Every problem with 5+ mentions had at least a partial match." />
-          )}
+        <Card
+          title={isFactorReport ? "High-priority factors not covered" : "High-evidence customer problems not addressed"}
+          hint={isFactorReport ? "Top-ranked factors with no covering backlog item" : "Backlog coverage gaps"}
+        >
+          {isFactorReport
+            ? uncoveredFactors.length === 0 && (
+                <EmptyState
+                  title="No high-priority factor gaps found"
+                  detail="Every top-ranked factor had at least partial backlog coverage."
+                />
+              )
+            : report.uncovered_high_evidence_problems.length === 0 && (
+                <EmptyState title="No high-evidence gaps found" detail="Every problem with 5+ mentions had at least a partial match." />
+              )}
           <div className="uncovered-list">
-            {report.uncovered_high_evidence_problems.map((problem) => (
-              <Link to={`/problems/${problem.problem_id}`} className="uncovered-item" key={problem.problem_id}>
-                <div>
-                  <strong>{problem.title}</strong>
-                  <span>{problem.journey_name || "Unmapped"}</span>
-                </div>
-                <div className="uncovered-count">
-                  {problem.evidence_count}
-                  <small>mentions</small>
-                </div>
-              </Link>
-            ))}
+            {isFactorReport
+              ? uncoveredFactors.map((factor) => (
+                  <div className="uncovered-item" key={factor.factor_id}>
+                    <div>
+                      <strong>
+                        #{factor.priority_rank ?? "—"} · {factor.factor_name}
+                      </strong>
+                      <span>
+                        {factor.description || "No narrative description"} · {factor.supporting_problem_count} represented problems
+                      </span>
+                    </div>
+                    <div className="uncovered-count">
+                      {(factor.priority_score ?? 0).toFixed(1)}
+                      <small>priority</small>
+                    </div>
+                  </div>
+                ))
+              : report.uncovered_high_evidence_problems.map((problem) => (
+                  <Link to={`/problems/${problem.problem_id}`} className="uncovered-item" key={problem.problem_id}>
+                    <div>
+                      <strong>{problem.title}</strong>
+                      <span>{problem.journey_name || "Unmapped"}</span>
+                    </div>
+                    <div className="uncovered-count">
+                      {problem.evidence_count}
+                      <small>mentions</small>
+                    </div>
+                  </Link>
+                ))}
           </div>
         </Card>
 

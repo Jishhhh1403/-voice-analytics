@@ -4,8 +4,10 @@ import BacklogPage from "./pages/BacklogPage";
 import DimensionDetailPage from "./pages/DimensionDetailPage";
 import DimensionsPage from "./pages/DimensionsPage";
 import JourneyPage from "./pages/JourneyPage";
+import MappingsPage from "./pages/MappingsPage";
 import ProblemDetailPage from "./pages/ProblemDetailPage";
 import PortfolioPage from "./pages/PortfolioPage";
+import PrioritizationPage from "./pages/PrioritizationPage";
 import ProblemsPage from "./pages/ProblemsPage";
 import ReportPage from "./pages/ReportPage";
 import ThemeMapPage from "./pages/ThemeMapPage";
@@ -19,9 +21,11 @@ export default function App() {
           <Route path="journey" element={<JourneyPage />} />
           <Route path="problems" element={<ProblemsPage />} />
           <Route path="themes" element={<ThemeMapPage />} />
+          <Route path="mappings" element={<MappingsPage />} />
           <Route path="dimensions" element={<DimensionsPage />} />
           <Route path="dimensions/:dimensionId" element={<DimensionDetailPage />} />
           <Route path="portfolio" element={<PortfolioPage />} />
+          <Route path="prioritization" element={<PrioritizationPage />} />
           <Route path="problems/:problemId" element={<ProblemDetailPage />} />
           <Route path="backlog" element={<BacklogPage />} />
           <Route path="reports/:reportId" element={<ReportPage />} />

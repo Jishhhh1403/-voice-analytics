@@ -238,6 +238,32 @@ export type BacklogUpload = {
   created_at: string;
 };
 
+export type CoveredProblem = {
+  problem_id: string;
+  title?: string | null;
+  problem_statement?: string | null;
+  journey_name?: string | null;
+  evidence_count?: number | null;
+  distinct_customers?: number | null;
+};
+
+export type FactorCoverageEntry = {
+  factor_id: string;
+  factor_name: string;
+  description?: string | null;
+  priority_rank?: number | null;
+  priority_score?: number | null;
+  score_status?: string | null;
+  eligibility_status?: string | null;
+  supporting_problem_count: number;
+  supporting_problems: CoveredProblem[];
+  covered_by_count: number;
+  covered_by_backlog_ids: string[];
+  best_coverage: number;
+  best_embedding_distance?: number | null;
+  best_relationship?: string | null;
+};
+
 export type Finding = {
   finding_id: string;
   backlog_id: string;
@@ -253,6 +279,22 @@ export type Finding = {
   ac_coverage: number;
   ac_gaps: string[];
   uncertainty?: string | null;
+  factor_id?: string | null;
+  factor_name?: string | null;
+  dimension_id?: string | null;
+  factor_priority_rank?: number | null;
+  factor_priority_score?: number | null;
+  factor_score_status?: string | null;
+  coverage?: number;
+  coverage_pct?: number;
+  embedding_similarity?: number;
+  embedding_distance?: number;
+  sparse_similarity?: number;
+  lexical_similarity?: number;
+  fused_similarity?: number;
+  priority_weighted_coverage?: number;
+  covered_problem_count?: number;
+  covered_problems?: CoveredProblem[];
 };
 
 export type Report = {
@@ -266,6 +308,9 @@ export type Report = {
   report: {
     generated_at: string;
     feedback_run_id: string;
+    validation_basis?: "factor_prioritisation" | "canonical_problems";
+    prioritisation_run_id?: string;
+    famd_run_id?: string;
     summary: Record<string, any>;
     backlog_items: {
       backlog_id: string;
@@ -278,12 +323,25 @@ export type Report = {
       journey_name: string;
       overall_alignment: string;
       best_finding?: Finding | null;
+      best_factor?: Finding | null;
       ac_coverage: number;
       ac_gap_count: number;
       findings: Finding[];
       customer_evidence_alignment_note: string;
+      backlog_priority_rank?: number;
+      priority_alignment_score?: number;
+      priority_alignment_pct?: number;
+      covered_factor_count?: number;
+      covered_factor_ids?: string[];
+      highest_priority_factor_rank?: number | null;
+      covered_problem_count?: number;
+      covered_problem_ids?: string[];
+      embedding_distance?: number | null;
+      factor_coverage_pct?: number;
     }[];
     findings: Finding[];
+    factor_coverage?: FactorCoverageEntry[];
+    uncovered_high_priority_factors?: FactorCoverageEntry[];
     uncovered_high_evidence_problems: {
       problem_id: string;
       title: string;
@@ -883,4 +941,309 @@ export type PortfolioStatus = {
   latest_run_id?: string | null;
   latest_run_status?: string | null;
   latest_runs: PortfolioRunSummary[];
+};
+
+export type FactorPrioritisationComponent = {
+  name: string;
+  label: string;
+  weight: number;
+  score: number | null;
+  weighted_contribution: number | null;
+  assessment_status: string;
+  calculation_method: string;
+  rule_version: string;
+  explanation: string;
+  raw_value: Record<string, unknown>;
+};
+
+export type FactorPrioritisationExplanation = {
+  factor_id: string;
+  dimension_id: string;
+  factor_name: string | null;
+  headline: string;
+  rank: number | null;
+  formula: string;
+  components: FactorPrioritisationComponent[];
+  evidence_coverage_pct: number;
+  assessed_components: string[];
+  missing_components: string[];
+  nomenclature_status: string;
+  nomenclature_approved: boolean;
+  why: string[];
+  caveats: string[];
+  nomenclature: {
+    factor_name?: string | null;
+    short_name?: string | null;
+    description?: string | null;
+    source?: string | null;
+    serialization_id?: string | null;
+    model_name?: string | null;
+    prompt_version?: string | null;
+  };
+  validation_warnings: string[];
+};
+
+export type FactorPrioritisationScore = {
+  prioritisation_run_id: string;
+  factor_id: string;
+  dimension_id: string;
+  dimension_number?: number | null;
+  factor_name: string | null;
+  prevalence_score: number | null;
+  statistical_importance_score: number | null;
+  representation_strength_score: number | null;
+  semantic_coherence_score: number | null;
+  final_priority_score: number | null;
+  evidence_coverage: number;
+  eligibility_status: string;
+  score_status: string;
+  rank: number | null;
+  weights: Record<string, number>;
+  explanation: FactorPrioritisationExplanation;
+  calculated_at: string;
+};
+
+export type FactorSemanticSubdimension = {
+  label: string;
+  score: number | null;
+  status: string;
+  problem_count: number;
+  distinct_levels: number;
+  dominant_level: string | null;
+  dominant_share_pct: number | null;
+  explanation: string;
+  top_levels: { level: string; count: number; share_pct: number }[];
+};
+
+export type FactorSemanticAssessment = {
+  assessment_id: string;
+  prioritisation_run_id: string;
+  factor_id: string;
+  famd_run_id: string;
+  semantic_evaluation: {
+    subdimensions: Record<string, FactorSemanticSubdimension>;
+    coverage_pct: number;
+    assessed_dimensions: number;
+    total_dimensions: number;
+    rule: string;
+    supporting_problem_ids: string[];
+    contradictory_problem_ids: string[];
+    nomenclature: Record<string, unknown>;
+  };
+  supporting_problem_ids: string[];
+  contradictory_problem_ids: string[];
+  assessment_status: string;
+  coverage: number;
+  reviewer_id?: string | null;
+  review_status: string;
+  review_note?: string | null;
+  reviewed_at?: string | null;
+  created_at: string;
+};
+
+export type FactorPrioritisationRunSummary = {
+  prioritisation_run_id: string;
+  famd_run_id: string;
+  feedback_run_id?: string | null;
+  feature_schema_version?: string | null;
+  scoring_model_version: string;
+  weight_configuration: Record<string, number>;
+  membership_rule_version: string;
+  representation_rule_version: string;
+  semantic_rule_version: string;
+  status: string;
+  stage?: string | null;
+  total_factor_count: number;
+  eligible_factor_count: number;
+  provisional_factor_count: number;
+  excluded_factor_count: number;
+  summary: {
+    factor_count?: number;
+    scored_factor_count?: number;
+    validated_score_count?: number;
+    provisional_score_count?: number;
+    insufficient_score_count?: number;
+    problems_analysed?: number;
+    top_factor_id?: string | null;
+    top_factor_name?: string | null;
+    top_priority_score?: number | null;
+    validation_warnings?: string[];
+    [key: string]: unknown;
+  };
+  error?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
+
+export type FactorPrioritisationRun = FactorPrioritisationRunSummary & {
+  scores: FactorPrioritisationScore[];
+  semantic_assessments: FactorSemanticAssessment[];
+};
+
+export type FactorPrioritisationDetail = {
+  score: FactorPrioritisationScore;
+  evidence: {
+    component_name: string;
+    component_label: string;
+    component_weight: number;
+    component_score: number | null;
+    weighted_contribution: number | null;
+    raw_value: Record<string, unknown>;
+    calculation_method: string;
+    rule_version: string;
+    source_table: string | null;
+    assessment_status: string;
+    explanation: string;
+    evidence_reference: Record<string, unknown>;
+  }[];
+  semantic_assessment: FactorSemanticAssessment | null;
+};
+
+export type MappingFeedbackNode = {
+  feedback_id: string;
+  submitted_at?: string | null;
+  source_type?: string | null;
+  source_channel?: string | null;
+  platform?: string | null;
+  rating?: number | null;
+  title: string;
+  text: string;
+  primary_theme_id?: string | null;
+  primary_theme_order?: number;
+  theme_count?: number;
+};
+
+export type MappingThemeNode = {
+  problem_id: string;
+  title: string;
+  problem_statement: string;
+  evidence_count?: number | null;
+  distinct_customers?: number | null;
+  negative_count?: number | null;
+  journey_node_id?: string | null;
+  journey_name?: string | null;
+  lifecycle_status?: string | null;
+  validation_status?: string | null;
+  discovery_confidence?: number | null;
+  primary_factor_id?: string | null;
+  primary_factor_rank?: number;
+  primary_factor_score?: number;
+  mapped_feedback_count?: number;
+};
+
+export type MappingFactorNode = {
+  factor_id: string;
+  dimension_id: string;
+  factor_name: string;
+  rank: number;
+  priority_score: number;
+  score_status: string;
+  eligibility_status: string;
+  evidence_coverage: number;
+};
+
+export type MappingBacklogNode = {
+  backlog_id: string;
+  title: string;
+  description?: string;
+  product_area?: string | null;
+  priority?: string | null;
+  business_goal?: string | null;
+  backlog_priority_rank?: number;
+  overall_alignment?: string | null;
+  priority_alignment_pct?: number | null;
+  factor_coverage_pct?: number | null;
+  covered_factor_count?: number;
+  covered_factor_ids?: string[];
+  covered_problem_count?: number;
+  highest_priority_factor_rank?: number | null;
+  best_factor_id?: string | null;
+  best_relationship?: string | null;
+};
+
+export type MappingFeedbackThemeLink = {
+  source: string;
+  target: string;
+  weight: number;
+  evidence_count: number;
+};
+
+export type MappingThemeFactorLink = {
+  source: string;
+  target: string;
+  score: number;
+  margin: number;
+  membership_type: string;
+  is_ambiguous: boolean;
+};
+
+export type MappingFactorBacklogLink = {
+  source: string;
+  target: string;
+  relationship?: string | null;
+  coverage?: number | null;
+  coverage_pct?: number | null;
+  alignment_score?: number | null;
+  embedding_distance?: number | null;
+  priority_weighted_coverage?: number | null;
+  supporting_feedback_count?: number | null;
+  covered_problem_count?: number | null;
+  problem_id?: string | null;
+  problem_title?: string | null;
+  rationale?: string | null;
+};
+
+export type MappingGraphCounts = {
+  feedback_total: number;
+  feedback_mapped: number;
+  feedback_unmapped: number;
+  themes: number;
+  themes_with_factors: number;
+  factors: number;
+  backlogs: number;
+  feedback_theme_links: number;
+  theme_factor_links: number;
+  factor_backlog_links: number;
+};
+
+export type MappingGraphResponse = {
+  status: "READY" | "PARTIAL" | "NO_FEEDBACK_RUN" | "NO_THEMES";
+  generated_at: string;
+  feedback_run_id?: string | null;
+  feedback_run_finished_at?: string | null;
+  famd_run_id?: string | null;
+  prioritisation_run_id?: string | null;
+  report_id?: string | null;
+  validation_run_id?: string | null;
+  upload_id?: string | null;
+  feedback: MappingFeedbackNode[];
+  themes: MappingThemeNode[];
+  factors: MappingFactorNode[];
+  backlogs: MappingBacklogNode[];
+  links: {
+    feedback_theme: MappingFeedbackThemeLink[];
+    theme_factor: MappingThemeFactorLink[];
+    factor_backlog: MappingFactorBacklogLink[];
+  };
+  counts: MappingGraphCounts;
+  warnings: string[];
+  versions: Record<string, string | null | undefined>;
+};
+
+export type MappingNodeKind = "feedback" | "theme" | "factor" | "backlog";
+
+export type MappingSelection = {
+  kind: MappingNodeKind;
+  id: string;
+};
+
+export type MappingFocusTarget = MappingSelection & {
+  nonce: number;
+};
+
+export type MappingSearchResult = MappingSelection & {
+  label: string;
+  subtitle: string;
+  score: number;
 };

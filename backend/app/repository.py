@@ -1403,6 +1403,10 @@ class Repository:
                 "RELATED_BUT_NOT_SOLVING": "related",
                 "NEEDS_REVIEW": "needs_review",
                 "CONTRADICTS_OR_OUT_OF_SCOPE": "out_of_scope",
+                "COVERS": "full",
+                "PARTIALLY_COVERS": "partial",
+                "RELATED": "related",
+                "NOT_COVERED": "uncovered",
             }.get(relationship, "uncovered")
             rows.append(
                 (
@@ -1412,28 +1416,34 @@ class Repository:
                     relationship,
                     coverage_type,
                     best.get("alignment_score", 0.0) if best else 0.0,
-                    None,
-                    index,
+                    item.get("priority_alignment_score"),
+                    item.get("backlog_priority_rank", index),
                     created_at,
                 )
             )
             for rank, finding in enumerate(findings[:10], start=1):
+                problem_id = finding.get("problem_id")
+                if not problem_id:
+                    continue
                 candidate_rows.append(
                     (
                         f"BPC-{uuid.uuid4().hex[:16]}",
                         report_id,
                         report.get("validation_run_id"),
                         item["backlog_id"],
-                        finding.get("problem_id"),
-                        None,
-                        None,
+                        problem_id,
+                        finding.get("embedding_similarity"),
+                        finding.get("sparse_similarity"),
                         finding.get("alignment_score", 0.0),
-                        None,
+                        finding.get("fused_similarity"),
                         rank,
                         dumps(
                             {
                                 "relationship": finding.get("relationship"),
                                 "rationale": finding.get("rationale"),
+                                "factor_id": finding.get("factor_id"),
+                                "factor_name": finding.get("factor_name"),
+                                "embedding_distance": finding.get("embedding_distance"),
                             }
                         ),
                         created_at,
@@ -1904,6 +1914,47 @@ class Repository:
             return None
         row["payload"] = loads(row.pop("payload_json", None), {})
         return row
+
+    def get_latest_completed_dimension_narrative_serialization(
+        self, run_id: str
+    ) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT * FROM dimension_narrative_serializations WHERE run_id=? AND status='COMPLETED' "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (run_id,),
+        )
+        if not row:
+            return None
+        row["payload"] = loads(row.pop("payload_json", None), {})
+        return row
+
+    def latest_dimension_narrative_nomenclature(self, run_id: str) -> list[dict[str, Any]]:
+        record = self.get_latest_completed_dimension_narrative_serialization(run_id)
+        if not record:
+            return []
+        rows: list[dict[str, Any]] = []
+        for factor in (record.get("payload") or {}).get("factors") or []:
+            dimension_id = str(factor.get("dimension_id") or "")
+            factor_id = str(factor.get("factor_id") or "")
+            if not dimension_id and factor_id.startswith("F") and factor_id[1:].isdigit():
+                dimension_id = f"D{factor_id[1:]}"
+            if not dimension_id:
+                continue
+            rows.append(
+                {
+                    "dimension_id": dimension_id,
+                    "factor_id": factor_id or None,
+                    "factor_name": factor.get("name"),
+                    "short_name": factor.get("short_name"),
+                    "description": factor.get("description"),
+                    "business_interpretation": factor.get("business_interpretation"),
+                    "source": "dimension_narrative_serialization",
+                    "serialization_id": record.get("serialization_id"),
+                    "model_name": record.get("model_name"),
+                    "prompt_version": record.get("prompt_version"),
+                }
+            )
+        return rows
 
     def get_dimension_scores(self, run_id: str, dimension_id: str) -> list[dict[str, Any]]:
         rows = self.db.query(
@@ -2380,6 +2431,16 @@ class Repository:
             row["provisional"] = bool(row.get("provisional"))
         return rows
 
+    def latest_factor_nomenclature_for_dimension_run(self, dimension_run_id: str) -> list[dict[str, Any]]:
+        run = self.db.query_one(
+            "SELECT r.run_id FROM problem_portfolio_analysis_runs r "
+            "WHERE r.dimension_run_id=? AND EXISTS ("
+            "SELECT 1 FROM problem_factor_nomenclature n WHERE n.run_id=r.run_id"
+            ") ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1",
+            (dimension_run_id,),
+        )
+        return self.get_factor_nomenclature(run["run_id"]) if run else []
+
     def save_factor_profiles(self, run_id: str, rows: list[dict[str, Any]]) -> None:
         with self.db.transaction() as conn:
             conn.execute("DELETE FROM problem_factor_profiles WHERE run_id=?", (run_id,))
@@ -2495,6 +2556,242 @@ class Repository:
         row["errors"] = loads(row.pop("errors_json", None), [])
         row["warnings"] = loads(row.pop("warnings_json", None), [])
         return row
+
+    # ------------------------------------------------- factor prioritisation
+    def create_factor_prioritisation_run(self, values: dict[str, Any]) -> None:
+        self.db.insert("factor_prioritisation_runs", values)
+
+    def update_factor_prioritisation_run(self, run_id: str, **fields: Any) -> None:
+        for key in ("weight_configuration", "summary"):
+            if key in fields:
+                fields[f"{key}_json"] = dumps(fields.pop(key))
+        if not fields:
+            return
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        self.db.execute(
+            f"UPDATE factor_prioritisation_runs SET {assignments} WHERE prioritisation_run_id=?",
+            [*fields.values(), run_id],
+        )
+
+    def get_factor_prioritisation_run(self, run_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT * FROM factor_prioritisation_runs WHERE prioritisation_run_id=?",
+            (run_id,),
+        )
+        if not row:
+            return None
+        row["weight_configuration"] = loads(row.pop("weight_configuration_json", None), {})
+        row["summary"] = loads(row.pop("summary_json", None), {})
+        return row
+
+    def list_factor_prioritisation_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM factor_prioritisation_runs ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (limit,),
+        )
+        for row in rows:
+            row["weight_configuration"] = loads(row.pop("weight_configuration_json", None), {})
+            row["summary"] = loads(row.pop("summary_json", None), {})
+        return rows
+
+    def find_reusable_factor_prioritisation_run(
+        self,
+        famd_run_id: str,
+        scoring_model_version: str,
+        weight_configuration_json: str,
+    ) -> dict[str, Any] | None:
+        return self.db.query_one(
+            "SELECT * FROM factor_prioritisation_runs WHERE famd_run_id=? AND scoring_model_version=? "
+            "AND weight_configuration_json=? AND status='COMPLETED' "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (famd_run_id, scoring_model_version, weight_configuration_json),
+        )
+
+    def save_factor_prioritisation_results(
+        self,
+        run_id: str,
+        *,
+        scores: list[dict[str, Any]],
+        evidence: list[dict[str, Any]],
+        semantic_assessments: list[dict[str, Any]],
+    ) -> None:
+        now = now_iso()
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM factor_prioritisation_scores WHERE prioritisation_run_id=?", (run_id,))
+            conn.execute("DELETE FROM factor_prioritisation_evidence WHERE prioritisation_run_id=?", (run_id,))
+            conn.execute("DELETE FROM factor_semantic_assessments WHERE prioritisation_run_id=?", (run_id,))
+            conn.executemany(
+                "INSERT INTO factor_prioritisation_scores (prioritisation_run_id, factor_id, dimension_id, "
+                "dimension_number, factor_name, prevalence_score, statistical_importance_score, "
+                "representation_strength_score, semantic_coherence_score, final_priority_score, evidence_coverage, "
+                "eligibility_status, score_status, rank, weights_json, explanation_json, calculated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        item["factor_id"],
+                        item["dimension_id"],
+                        item.get("dimension_number"),
+                        item.get("factor_name"),
+                        item.get("prevalence_score"),
+                        item.get("statistical_importance_score"),
+                        item.get("representation_strength_score"),
+                        item.get("semantic_coherence_score"),
+                        item.get("final_priority_score"),
+                        item.get("evidence_coverage"),
+                        item["eligibility_status"],
+                        item["score_status"],
+                        item.get("rank"),
+                        dumps(item.get("weights")),
+                        dumps(item.get("explanation")),
+                        now,
+                    )
+                    for item in scores
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO factor_prioritisation_evidence (prioritisation_run_id, factor_id, component_name, "
+                "component_label, component_weight, component_score, weighted_contribution, raw_value_json, "
+                "normalised_value, calculation_method, rule_version, source_table, assessment_status, explanation, "
+                "evidence_reference_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        item["factor_id"],
+                        item["component_name"],
+                        item["component_label"],
+                        item.get("component_weight"),
+                        item.get("component_score"),
+                        item.get("weighted_contribution"),
+                        dumps(item.get("raw_value")),
+                        item.get("normalised_value"),
+                        item["calculation_method"],
+                        item["rule_version"],
+                        item.get("source_table"),
+                        item["assessment_status"],
+                        item["explanation"],
+                        dumps(item.get("evidence_reference")),
+                        now,
+                    )
+                    for item in evidence
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO factor_semantic_assessments (assessment_id, prioritisation_run_id, factor_id, "
+                "famd_run_id, semantic_evaluation_json, supporting_problem_ids_json, contradictory_problem_ids_json, "
+                "assessment_status, coverage, reviewer_id, review_status, review_note, reviewed_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        item["assessment_id"],
+                        run_id,
+                        item["factor_id"],
+                        item["famd_run_id"],
+                        dumps(item.get("semantic_evaluation")),
+                        dumps(item.get("supporting_problem_ids")),
+                        dumps(item.get("contradictory_problem_ids")),
+                        item["assessment_status"],
+                        item.get("coverage"),
+                        item.get("reviewer_id"),
+                        item.get("review_status", "UNREVIEWED"),
+                        item.get("review_note"),
+                        item.get("reviewed_at"),
+                        now,
+                    )
+                    for item in semantic_assessments
+                ],
+            )
+
+    def get_factor_prioritisation_scores(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM factor_prioritisation_scores WHERE prioritisation_run_id=? "
+            "ORDER BY COALESCE(rank, 9999), final_priority_score DESC, factor_id",
+            (run_id,),
+        )
+        for row in rows:
+            row["weights"] = loads(row.pop("weights_json", None), {})
+            row["explanation"] = loads(row.pop("explanation_json", None), {})
+        return rows
+
+    def get_factor_prioritisation_score(self, run_id: str, factor_id: str) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT * FROM factor_prioritisation_scores WHERE prioritisation_run_id=? AND factor_id=?",
+            (run_id, factor_id),
+        )
+        if not row:
+            return None
+        row["weights"] = loads(row.pop("weights_json", None), {})
+        row["explanation"] = loads(row.pop("explanation_json", None), {})
+        return row
+
+    def get_factor_prioritisation_evidence(
+        self,
+        run_id: str,
+        factor_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = [run_id]
+        where = "prioritisation_run_id=?"
+        if factor_id:
+            where += " AND factor_id=?"
+            params.append(factor_id)
+        rows = self.db.query(
+            f"SELECT * FROM factor_prioritisation_evidence WHERE {where} "
+            "ORDER BY factor_id, component_name",
+            params,
+        )
+        for row in rows:
+            row["raw_value"] = loads(row.pop("raw_value_json", None), {})
+            row["evidence_reference"] = loads(row.pop("evidence_reference_json", None), {})
+        return rows
+
+    def get_factor_semantic_assessments(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM factor_semantic_assessments WHERE prioritisation_run_id=? ORDER BY factor_id",
+            (run_id,),
+        )
+        for row in rows:
+            row["semantic_evaluation"] = loads(row.pop("semantic_evaluation_json", None), {})
+            row["supporting_problem_ids"] = loads(row.pop("supporting_problem_ids_json", None), [])
+            row["contradictory_problem_ids"] = loads(row.pop("contradictory_problem_ids_json", None), [])
+        return rows
+
+    def get_factor_semantic_assessment(self, run_id: str, factor_id: str) -> dict[str, Any] | None:
+        rows = self.get_factor_semantic_assessments(run_id)
+        return next((item for item in rows if item["factor_id"] == factor_id), None)
+
+    def update_factor_semantic_review(
+        self,
+        run_id: str,
+        factor_id: str,
+        *,
+        reviewer_id: str,
+        review_status: str,
+        review_note: str = "",
+    ) -> None:
+        self.db.execute(
+            "UPDATE factor_semantic_assessments SET reviewer_id=?, review_status=?, review_note=?, reviewed_at=? "
+            "WHERE prioritisation_run_id=? AND factor_id=?",
+            (reviewer_id, review_status, review_note, now_iso(), run_id, factor_id),
+        )
+
+    def latest_factor_prioritisation_run(self) -> dict[str, Any] | None:
+        row = self.db.query_one(
+            "SELECT * FROM factor_prioritisation_runs WHERE status='COMPLETED' "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        )
+        return self.get_factor_prioritisation_run(row["prioritisation_run_id"]) if row else None
+
+    def latest_prioritisable_dimension_run(self, feedback_run_id: str | None = None) -> dict[str, Any] | None:
+        params: list[Any] = []
+        where = "status IN ('PENDING_REVIEW', 'APPROVED', 'PUBLISHED')"
+        if feedback_run_id:
+            where += " AND feedback_run_id=?"
+            params.append(feedback_run_id)
+        return self.db.query_one(
+            f"SELECT * FROM dimension_analysis_runs WHERE {where} "
+            "ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC LIMIT 1",
+            params,
+        )
 
     # ---------------------------------------------------------------- admin
     def audit(self, actor: str, action: str, entity_type: str, entity_id: str, detail: dict[str, Any] | None = None) -> None:
