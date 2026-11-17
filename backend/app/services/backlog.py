@@ -13,6 +13,7 @@ from typing import Any
 from ..config import Settings
 from ..intelligence import lexicon
 from ..intelligence.contracts import BacklogProfile
+from ..intelligence.coverage import CoverageAssessment
 from ..intelligence.retrieval import HybridRetriever
 from ..intelligence.taxonomy import Taxonomy
 from ..intelligence.text import jaccard, token_set, tokenize
@@ -324,13 +325,14 @@ class BacklogValidationService:
         )
 
     def _validate(self, upload: dict[str, Any], profiles: list[BacklogProfile]) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
-        priority_run = self.repo.latest_factor_prioritisation_run()
-        if priority_run:
-            prioritisation = FactorPrioritisationService(self.settings, self.repo).get_run(
-                priority_run["prioritisation_run_id"]
-            )
-            if prioritisation and prioritisation.get("scores"):
-                return self._validate_factors(upload, profiles, prioritisation)
+        if self.settings.enable_factor_analysis and self.settings.enable_factor_prioritisation:
+            priority_run = self.repo.latest_factor_prioritisation_run()
+            if priority_run:
+                prioritisation = FactorPrioritisationService(self.settings, self.repo).get_run(
+                    priority_run["prioritisation_run_id"]
+                )
+                if prioritisation and prioritisation.get("scores"):
+                    return self._validate_factors(upload, profiles, prioritisation)
         return self._validate_problems(upload, profiles)
 
     def _problems_by_id(self, problem_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -788,8 +790,9 @@ class BacklogValidationService:
             raise ValueError("run a feedback pipeline before validating a backlog")
         run_id = latest_run["run_id"]
         problems = self.repo.db.query(
-            "SELECT p.problem_id, p.title, p.problem_statement, p.customer_intent, p.aspect, p.symptom_category, "
-            "p.journey_node_id, p.evidence_count, p.distinct_customers, p.negative_count, p.last_seen, "
+            "SELECT p.problem_id, p.title, p.problem_statement, p.canonical_description, p.customer_intent, "
+            "p.aspect, p.symptom_category, p.journey_node_id, p.evidence_count, p.distinct_customers, "
+            "p.negative_count, p.last_seen, "
             "(SELECT display_name FROM taxonomy_nodes t WHERE t.node_id=p.journey_node_id ORDER BY t.version DESC LIMIT 1) "
             "AS journey_name FROM customer_problems p WHERE p.run_id=? ORDER BY p.evidence_count DESC",
             (run_id,),
@@ -797,29 +800,23 @@ class BacklogValidationService:
         if not problems:
             raise ValueError("no canonical problems available; run the feedback pipeline first")
 
-        problem_texts = [f"{p['title']} {p['problem_statement']}" for p in problems]
-        backlog_texts = [
-            " ".join(
-                filter(
-                    None,
-                    [
-                        p.title,
-                        p.description,
-                        p.acceptance_criteria,
-                        p.product_area or "",
-                        p.intended_outcome or "",
-                        p.customer_intent or "",
-                        p.target_feature or "",
-                        p.target_journey or "",
-                        p.functional_scope or "",
-                    ],
-                )
-            )
-            for p in profiles
+        backlog_items = [
+            {
+                "backlog_id": profile.backlog_id,
+                "title": profile.title,
+                "description": profile.description,
+                "acceptance_criteria": profile.acceptance_criteria,
+                "product_area": profile.product_area,
+                "intended_outcome": profile.intended_outcome,
+                "customer_intent": profile.customer_intent,
+                "target_feature": profile.target_feature,
+                "target_journey": profile.target_journey,
+                "functional_scope": profile.functional_scope,
+            }
+            for profile in profiles
         ]
-        retriever = HybridRetriever(self.settings).fit(problem_texts)
-        retrieval = retriever.score(backlog_texts)
-        problem_vectors = retrieval.scores
+        coverage = CoverageAssessment(self.settings).assess([dict(problem) for problem in problems], backlog_items)
+        verdicts = {verdict.problem_id: verdict for verdict in coverage.verdicts}
 
         evidence_by_problem = self._evidence(run_id)
         findings: list[dict[str, Any]] = []
@@ -827,26 +824,42 @@ class BacklogValidationService:
         addressed_problem_ids: set[str] = set()
 
         for index, profile in enumerate(profiles):
-            problem_scores = problem_vectors[index]
+            problem_scores = coverage.scores[:, index]
             candidates: list[tuple[float, int]] = sorted(
                 [(float(score), problem_index) for problem_index, score in enumerate(problem_scores)],
                 reverse=True,
             )
             item_findings: list[dict[str, Any]] = []
-            for similarity, problem_index in candidates[:8]:
+            for rank, (score, problem_index) in enumerate(candidates[:8]):
                 problem = problems[problem_index]
                 node_alignment, node_reason = self._node_alignment(profile, problem)
                 intent_alignment = self._intent_alignment(profile, problem)
-                coverage, covered, uncovered = self._symptom_coverage(profile, problem)
-                lexical = jaccard(set(profile.tokens), token_set(problem_texts[problem_index]))
-                score = round(
-                    0.35 * max(similarity, lexical) + 0.25 * node_alignment + 0.2 * intent_alignment + 0.2 * coverage,
-                    3,
-                )
-                relationship = self._relationship(
-                    similarity, lexical, node_alignment, intent_alignment, coverage, problem, score
-                )
-                if relationship == "NO_CLEAR_RELATIONSHIP" and (similarity < 0.18 and node_alignment == 0):
+                symptom_coverage, covered, uncovered = self._symptom_coverage(profile, problem)
+                lexical = jaccard(set(profile.tokens), token_set(f"{problem['title']} {problem['problem_statement']}"))
+                verdict = verdicts.get(problem["problem_id"])
+                is_closest = bool(verdict and verdict.closest_backlog_id == profile.backlog_id)
+                if is_closest and verdict is not None:
+                    score = verdict.coverage_score
+                    coverage_status = verdict.coverage_status
+                    decision = verdict.decision
+                else:
+                    coverage_status = (
+                        "covered"
+                        if score >= self.settings.coverage_match_threshold
+                        else "not_covered"
+                        if score < self.settings.coverage_mismatch_threshold
+                        else "grey_zone"
+                    )
+                    decision = "MATCH" if coverage_status == "covered" else "MISMATCH"
+                if is_closest and decision == "MATCH":
+                    relationship = "ADDRESSES"
+                elif coverage_status == "grey_zone" and not is_closest:
+                    relationship = "NEEDS_REVIEW"
+                elif decision == "MATCH":
+                    relationship = "ADDRESSES"
+                else:
+                    relationship = "NO_CLEAR_RELATIONSHIP"
+                if rank > 0 and relationship == "NO_CLEAR_RELATIONSHIP" and score < 0.18 and node_alignment == 0:
                     continue
                 evidence = evidence_by_problem.get(problem["problem_id"], [])[:3]
                 supporting = int(problem["evidence_count"] or 0)
@@ -855,12 +868,10 @@ class BacklogValidationService:
                     for label in uncovered
                 ]
                 uncertainty = None
-                if relationship in ("ADDRESSES", "PARTIALLY_ADDRESSES") and supporting < 2:
-                    uncertainty = "Only one supporting feedback item; treat as NEEDS_REVIEW until more evidence is available."
-                    relationship = "NEEDS_REVIEW"
-                if 0.25 <= coverage < 0.45 and relationship == "ADDRESSES":
-                    relationship = "NEEDS_REVIEW"
-                    uncertainty = uncertainty or "Acceptance criteria cover only part of the reported problem scope."
+                if coverage_status == "grey_zone" and not is_closest:
+                    uncertainty = "Grey-zone score; only the closest backlog item is adjudicated by the agent consortium."
+                elif is_closest and verdict and verdict.grey_zone:
+                    uncertainty = f"Consortium decision {decision}: {verdict.grey_zone['rationale'][:180]}"
                 finding = {
                     "finding_id": "F-" + hashlib.sha1(f"{profile.backlog_id}|{problem['problem_id']}".encode()).hexdigest()[:14],
                     "backlog_id": profile.backlog_id,
@@ -868,22 +879,31 @@ class BacklogValidationService:
                     "problem_title": problem["title"],
                     "relationship": relationship,
                     "rationale": (
-                        f"{node_reason} Intent alignment {intent_alignment:.2f}; symptom coverage {coverage:.2f}; "
-                        f"semantic/lexical similarity {max(similarity, lexical):.2f}. "
+                        f"{node_reason} Intent alignment {intent_alignment:.2f}; symptom coverage {symptom_coverage:.2f}; "
+                        f"lexical similarity {lexical:.2f}. "
+                        f"Coverage score {score:.4f} via {coverage.provider} ({coverage_status}, {decision}). "
                         f"Covered symptoms: {', '.join(covered) if covered else 'none'}. "
                         f"Evidence: {supporting} customer mention(s)."
                     ),
                     "alignment_score": score,
+                    "coverage_score": score,
+                    "coverage_status": coverage_status,
+                    "coverage_decision": decision,
+                    "coverage_model": coverage.model_name,
+                    "closest_backlog_id": verdict.closest_backlog_id if is_closest and verdict else None,
+                    "grey_zone_deliberation": verdict.grey_zone if is_closest and verdict else None,
+                    "embedding_similarity": score,
+                    "embedding_distance": round(1.0 - score, 4),
                     "supporting_feedback_count": supporting,
                     "evidence": evidence,
                     "journey_node_id": problem["journey_node_id"],
                     "journey_name": problem.get("journey_name"),
-                    "ac_coverage": coverage,
+                    "ac_coverage": symptom_coverage,
                     "ac_gaps": ac_gaps,
                     "uncertainty": uncertainty,
                 }
                 item_findings.append(finding)
-                if relationship in ("ADDRESSES", "PARTIALLY_ADDRESSES"):
+                if (is_closest and decision == "MATCH") or (not is_closest and relationship == "ADDRESSES"):
                     addressed_problem_ids.add(problem["problem_id"])
             item_findings.sort(key=lambda item: (item["alignment_score"], item["supporting_feedback_count"]), reverse=True)
             findings.extend(item_findings)
@@ -936,6 +956,22 @@ class BacklogValidationService:
 
         relation_counts = Counter(item["relationship"] for item in findings)
         alignment_counts = Counter(item["overall_alignment"] for item in backlog_summaries)
+        canonical_coverage = [
+            {
+                "problem_id": verdict.problem_id,
+                "problem_title": verdict.problem_title,
+                "closest_backlog_id": verdict.closest_backlog_id,
+                "closest_backlog_title": verdict.closest_backlog_title,
+                "coverage_score": verdict.coverage_score,
+                "coverage_status": verdict.coverage_status,
+                "decision": verdict.decision,
+                "rationale": verdict.rationale,
+                "grey_zone_deliberation": verdict.grey_zone,
+            }
+            for verdict in coverage.verdicts
+        ]
+        status_counts = Counter(item["coverage_status"] for item in canonical_coverage)
+        decision_counts = Counter(item["decision"] for item in canonical_coverage)
         uncovered = [
             problem
             for problem in problems
@@ -945,19 +981,25 @@ class BacklogValidationService:
             "generated_at": now_iso(),
             "feedback_run_id": run_id,
             "upload_id": upload["upload_id"],
+            "validation_basis": "canonical_problem_coverage",
             "backlog_count": len(profiles),
             "canonical_problem_count": len(problems),
             "findings": len(findings),
             "relationships": dict(relation_counts),
             "alignment": dict(alignment_counts),
             "high_evidence_uncovered_problems": len(uncovered),
+            "coverage_status": dict(status_counts),
+            "coverage_decisions": dict(decision_counts),
+            "covered_canonical_problems": status_counts.get("covered", 0),
+            "grey_zone_canonical_problems": status_counts.get("grey_zone", 0),
+            "not_covered_canonical_problems": status_counts.get("not_covered", 0),
             "taxonomy_version": self.taxonomy.version,
-            "embedding_model": retrieval.model_name,
+            "embedding_model": coverage.model_name,
             "retrieval": {
-                "provider": self.settings.retrieval_provider,
-                "dense_weight": retrieval.dense_weight,
-                "sparse_weight": retrieval.sparse_weight,
-                "reranked": retrieval.reranked,
+                "provider": coverage.provider,
+                "model": coverage.model_name,
+                "thresholds": coverage.thresholds,
+                "grey_zone_agents": self.settings.grey_zone_agent_count,
             },
             "schema_version": self.settings.schema_version,
         }
@@ -967,9 +1009,11 @@ class BacklogValidationService:
             "filename": upload.get("filename"),
             "generated_at": summary["generated_at"],
             "feedback_run_id": run_id,
+            "validation_basis": "canonical_problem_coverage",
             "summary": summary,
             "backlog_items": backlog_summaries,
             "findings": findings,
+            "canonical_coverage": canonical_coverage,
             "uncovered_high_evidence_problems": [
                 {
                     "problem_id": problem["problem_id"],
@@ -985,7 +1029,7 @@ class BacklogValidationService:
             ],
             "versions": {
                 "taxonomy": self.taxonomy.version,
-                "embedding_model": retrieval.model_name,
+                "embedding_model": coverage.model_name,
                 "schema": self.settings.schema_version,
                 "code": self.settings.code_version,
             },
@@ -993,7 +1037,7 @@ class BacklogValidationService:
                 "Alignment is derived only from the supplied customer feedback and backlog text.",
                 "Organisational priority is not calculated; source priority is preserved as metadata.",
                 "A NEEDS_REVIEW relationship must be resolved by a product owner before it is treated as aligned.",
-                "Similarity is used for candidate retrieval, never as the final relationship decision.",
+                "Coverage scores are BGE cosine similarities clipped to 0-1; grey-zone scores are adjudicated by an LLM agent consortium.",
             ],
         }
         return report, findings, summary

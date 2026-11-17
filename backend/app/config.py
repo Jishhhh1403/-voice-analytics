@@ -46,9 +46,12 @@ class Settings(BaseSettings):
     extraction_provider: str = "rules"
     llm_model: str = "gemini-2.0-flash"
     gemini_model: str = "gemini-3.5-flash-lite"
+    gemini_fallback_model: str = ""
     llm_timeout_seconds: int = 45
     llm_batch_size: int = 8
     gemini_api_key: str = ""
+    gemini_api_key_1: str = ""
+    gemini_api_key_2: str = ""
     openai_api_key: str = ""
     openai_base_url: str = "http://localhost:11434/v1"
     openai_model: str = "llama3.1"
@@ -62,13 +65,33 @@ class Settings(BaseSettings):
     vertex_location: str = "us-central1"
     embedding_cache_dir: Path | None = None
     embedding_batch_size: int = 64
-    clustering_provider: str = "legacy"
+    tfidf_weight_journey_node: float = 0.40
+    tfidf_weight_symptom: float = 0.35
+    tfidf_weight_feedback: float = 0.25
+    bge_model_name: str = "BAAI/bge-large-en-v1.5"
+    bge_query_instruction: str = "Represent this sentence for searching relevant passages: "
+    coverage_match_threshold: float = 0.75
+    coverage_mismatch_threshold: float = 0.60
+    grey_zone_llm_enabled: bool = True
+    grey_zone_agent_count: int = 3
+    grey_zone_batch_size: int = 50
+    grey_zone_max_workers: int = 3
+    clustering_provider: str = "hdbscan"
     clustering_similarity_threshold: float = 0.64
     min_cluster_evidence: int = 1
     min_cluster_size: int = 2
     min_samples: int = 1
     cluster_selection_method: str = "eom"
-    canonicalisation_provider: str = "deterministic"
+    max_cluster_size: int = 8
+    canonicalisation_provider: str = "llm"
+    canonicalisation_model: str = ""
+    canonicalisation_max_neighbors: int = 3
+    canonicalisation_max_neighbor_chars: int = 120
+    canonicalisation_batch_size: int = 100
+    canonicalisation_max_workers: int = 4
+    canonicalisation_max_llm_calls: int = 1000
+    canonicalisation_timeout_seconds: int = 90
+    canonicalisation_temperature: float = 0.1
 
     retrieval_provider: str = "hybrid"
     retrieval_top_k: int = 8
@@ -103,7 +126,8 @@ class Settings(BaseSettings):
     mds_max_themes: int = 500
     mds_coordinate_scale: float = 1.0
     enable_conjoint_analysis: bool = False
-    enable_problem_dimensions: bool = True
+    enable_factor_analysis: bool = False
+    enable_problem_dimensions: bool = False
     problem_dimension_method: str = "FAMD"
     problem_dimension_methodology_version: str = "famd-1.0.0"
     problem_dimension_feature_schema_version: str = "problem-dimensions-1.0.0"
@@ -145,7 +169,7 @@ class Settings(BaseSettings):
     problem_dimension_cross_review_prompt_version: str = "dimension-cross-review-1.0.0"
     enable_problem_dimension_efa: bool = False
 
-    enable_factor_prioritisation: bool = True
+    enable_factor_prioritisation: bool = False
     factor_prioritisation_model_version: str = "factor-evidence-v1"
     factor_prioritisation_weight_prevalence: float = 0.30
     factor_prioritisation_weight_statistical: float = 0.25
