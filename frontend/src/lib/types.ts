@@ -279,6 +279,17 @@ export type Finding = {
   ac_coverage: number;
   ac_gaps: string[];
   uncertainty?: string | null;
+  lens_graduation?: {
+    lens_name: string;
+    association_score: number;
+    signal_score: number;
+    signal_score_threshold: number;
+    threshold: number;
+    original_decision: string;
+    final_decision: string;
+    shared_feedback_count: number;
+    rationale: string;
+  } | null;
   factor_id?: string | null;
   factor_name?: string | null;
   dimension_id?: string | null;
@@ -1118,6 +1129,9 @@ export type MappingThemeNode = {
   problem_id: string;
   title: string;
   problem_statement: string;
+  signal_count?: number;
+  coverage_status?: string | null;
+  closest_backlog_id?: string | null;
   evidence_count?: number | null;
   distinct_customers?: number | null;
   negative_count?: number | null;
@@ -1162,6 +1176,32 @@ export type MappingBacklogNode = {
   best_relationship?: string | null;
 };
 
+export type MappingSignalGroup = {
+  id: "problem" | "context";
+  count: number;
+};
+
+export type MappingSignalLink = {
+  source: "problem" | "context";
+  target: string;
+  count: number;
+};
+
+export type MappingProblemBacklogLink = {
+  source: string;
+  target: string | null;
+  status: string;
+  score?: number | null;
+  problem_title?: string | null;
+};
+
+export type MappingCoverageSummary = {
+  covered: number;
+  grey_zone: number;
+  not_covered: number;
+  unassessed: number;
+};
+
 export type MappingFeedbackThemeLink = {
   source: string;
   target: string;
@@ -1198,6 +1238,8 @@ export type MappingGraphCounts = {
   feedback_total: number;
   feedback_mapped: number;
   feedback_unmapped: number;
+  signals_total: number;
+  signals_linked: number;
   themes: number;
   themes_with_factors: number;
   factors: number;
@@ -1215,17 +1257,23 @@ export type MappingGraphResponse = {
   famd_run_id?: string | null;
   prioritisation_run_id?: string | null;
   report_id?: string | null;
+  coverage_report_id?: string | null;
   validation_run_id?: string | null;
   upload_id?: string | null;
   feedback: MappingFeedbackNode[];
+  signals: MappingSignalGroup[];
+  signal_links: MappingSignalLink[];
   themes: MappingThemeNode[];
   factors: MappingFactorNode[];
   backlogs: MappingBacklogNode[];
+  coverage_backlogs: MappingBacklogNode[];
   links: {
     feedback_theme: MappingFeedbackThemeLink[];
     theme_factor: MappingThemeFactorLink[];
     factor_backlog: MappingFactorBacklogLink[];
+    problem_backlog: MappingProblemBacklogLink[];
   };
+  coverage: MappingCoverageSummary;
   counts: MappingGraphCounts;
   warnings: string[];
   versions: Record<string, string | null | undefined>;

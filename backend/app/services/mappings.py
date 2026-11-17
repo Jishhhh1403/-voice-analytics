@@ -74,6 +74,25 @@ class MappingGraphService:
         feedback_by_id = {row["feedback_id"]: row for row in feedback_rows}
         theme_by_id = {row["problem_id"]: row for row in theme_rows}
 
+        signal_rows = self.repo.db.query(
+            "SELECT i.is_problem AS is_problem, pe.problem_id AS problem_id, COUNT(*) AS total "
+            "FROM problem_evidence pe JOIN extracted_insights i ON i.insight_id = pe.insight_id "
+            "WHERE pe.run_id=? GROUP BY i.is_problem, pe.problem_id",
+            (run_id,),
+        )
+        signal_group_counts: Counter[str] = Counter()
+        signal_by_theme: Counter[str] = Counter()
+        signal_links: list[dict[str, Any]] = []
+        for row in signal_rows:
+            group = "problem" if row["is_problem"] else "context"
+            total = int(row["total"] or 0)
+            signal_group_counts[group] += total
+            signal_by_theme[row["problem_id"]] += total
+            signal_links.append({"source": group, "target": row["problem_id"], "count": total})
+        signal_total = (
+            self.repo.db.scalar("SELECT COUNT(*) FROM extracted_insights WHERE run_id=?", (run_id,)) or 0
+        )
+
         evidence_rows = self.repo.db.query(
             "SELECT e.feedback_id, e.problem_id, MAX(e.weight) AS weight, COUNT(*) AS evidence_count, "
             "MIN(e.submitted_at) AS submitted_at, MAX(e.source_type) AS source_type, "
@@ -179,11 +198,14 @@ class MappingGraphService:
         backlogs: list[dict[str, Any]] = []
         factor_backlog_links: list[dict[str, Any]] = []
         report_row = self._resolve_report(report_id, factor_run)
+        coverage_report_row = self._resolve_coverage_report(report_id, run_id)
         warnings: list[str] = []
         if not factor_run:
             warnings.append("No completed factor prioritisation run is available.")
         if not report_row:
             warnings.append("No factor-based backlog validation report matches the latest factor run.")
+        if not coverage_report_row:
+            warnings.append("No backlog validation report matches this feedback run.")
         if report_row:
             report = report_row["report"]
             for item in report.get("backlog_items", []):
@@ -227,8 +249,69 @@ class MappingGraphService:
                     }
                 )
 
+        coverage_counts: Counter[str] = Counter()
+        problem_backlog_links: list[dict[str, Any]] = []
+        canonical_coverage: dict[str, dict[str, Any]] = {}
+        flow_backlogs: list[dict[str, Any]] = []
+        if coverage_report_row:
+            for index, item in enumerate(coverage_report_row["report"].get("backlog_items", [])):
+                flow_backlogs.append(
+                    {
+                        "backlog_id": item["backlog_id"],
+                        "title": item.get("title", ""),
+                        "product_area": item.get("product_area"),
+                        "priority": item.get("priority"),
+                        "backlog_priority_rank": int(item.get("backlog_priority_rank") or index + 1),
+                    }
+                )
+            for item in coverage_report_row["report"].get("canonical_coverage", []):
+                problem_id = item.get("problem_id")
+                if not problem_id:
+                    continue
+                status = item.get("coverage_status") or "unknown"
+                canonical_coverage[problem_id] = item
+                coverage_counts[status] += 1
+                problem_backlog_links.append(
+                    {
+                        "source": problem_id,
+                        "target": (
+                            item.get("closest_backlog_id")
+                            if status in {"covered", "grey_zone"}
+                            else None
+                        ),
+                        "status": status,
+                        "score": item.get("coverage_score"),
+                        "problem_title": item.get("problem_title"),
+                    }
+                )
+            if not canonical_coverage:
+                for row in self.repo.db.query(
+                    "SELECT backlog_id, problem_id, coverage_type, alignment_score "
+                    "FROM backlog_coverage_matrix WHERE report_id=? AND problem_id IS NOT NULL",
+                    (coverage_report_row["report_id"],),
+                ):
+                    status = {
+                        "full": "covered",
+                        "partial": "grey_zone",
+                        "uncovered": "not_covered",
+                    }.get(row["coverage_type"], row["coverage_type"])
+                    coverage_counts[status] += 1
+                    problem_backlog_links.append(
+                        {
+                            "source": row["problem_id"],
+                            "target": row["backlog_id"] if status in {"covered", "grey_zone"} else None,
+                            "status": status,
+                            "score": row["alignment_score"],
+                            "problem_title": theme_by_id.get(row["problem_id"], {}).get("title"),
+                        }
+                    )
+
         themes = list(theme_by_id.values())
         for theme in themes:
+            theme["signal_count"] = signal_by_theme.get(theme["problem_id"], 0)
+            coverage = canonical_coverage.get(theme["problem_id"])
+            theme["coverage_status"] = coverage.get("coverage_status") if coverage else None
+            theme["closest_backlog_id"] = coverage.get("closest_backlog_id") if coverage else None
             theme["primary_factor_id"] = primary_factor_by_theme.get(theme["problem_id"])
             theme["primary_factor_rank"] = factor_rank_by_id.get(
                 theme["primary_factor_id"] or "", 10_000
@@ -297,21 +380,37 @@ class MappingGraphService:
             "famd_run_id": factor_run["famd_run_id"] if factor_run else None,
             "prioritisation_run_id": factor_run["prioritisation_run_id"] if factor_run else None,
             "report_id": report_row["report_id"] if report_row else None,
+            "coverage_report_id": coverage_report_row["report_id"] if coverage_report_row else None,
             "validation_run_id": (report_row["report"].get("validation_run_id") if report_row else None),
             "upload_id": report_row["upload_id"] if report_row else None,
             "feedback": feedback_rows,
+            "signals": [
+                {"id": group, "count": signal_group_counts.get(group, 0)}
+                for group in ("problem", "context")
+            ],
+            "signal_links": signal_links,
             "themes": themes,
             "factors": factors,
             "backlogs": backlogs,
+            "coverage_backlogs": flow_backlogs,
             "links": {
                 "feedback_theme": feedback_theme_links,
                 "theme_factor": theme_factor_links,
                 "factor_backlog": factor_backlog_links,
+                "problem_backlog": problem_backlog_links,
+            },
+            "coverage": {
+                "covered": coverage_counts.get("covered", 0),
+                "grey_zone": coverage_counts.get("grey_zone", 0),
+                "not_covered": coverage_counts.get("not_covered", 0),
+                "unassessed": max(0, len(themes) - sum(coverage_counts.values())),
             },
             "counts": {
                 "feedback_total": len(feedback_rows),
                 "feedback_mapped": mapped_feedback,
                 "feedback_unmapped": len(feedback_rows) - mapped_feedback,
+                "signals_total": int(signal_total),
+                "signals_linked": sum(signal_group_counts.values()),
                 "themes": len(themes),
                 "themes_with_factors": len(primary_factor_by_theme),
                 "factors": len(factors),
@@ -351,4 +450,28 @@ class MappingGraphService:
             ):
                 row["report"] = report
                 return row
+        return None
+
+    def _resolve_coverage_report(
+        self, report_id: str | None, feedback_run_id: str
+    ) -> dict[str, Any] | None:
+        if report_id:
+            return self.repo.get_report(report_id)
+        rows = self.repo.db.query(
+            "SELECT report_id, report_json, upload_id FROM validation_reports "
+            "WHERE json_extract(report_json, '$.feedback_run_id')=? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 40",
+            (feedback_run_id,),
+        )
+        parsed: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for row in rows:
+            report = loads(row.pop("report_json", None), {})
+            parsed.append((row, report))
+        for row, report in parsed:
+            if report.get("canonical_coverage"):
+                row["report"] = report
+                return row
+        for row, report in parsed:
+            row["report"] = report
+            return row
         return None

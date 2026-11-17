@@ -1,13 +1,16 @@
 import {
+  Activity,
   ArrowRight,
   Crosshair,
   GitBranch,
+  Network,
   Search,
   ShieldCheck,
-  Sparkles,
   Waypoints,
+  Workflow,
 } from "lucide-react";
 import { KeyboardEvent, useMemo, useState } from "react";
+import MappingFlow from "../components/MappingFlow";
 import MappingGraph from "../components/MappingGraph";
 import { Badge, Card, EmptyState, ErrorState, PageHeader, Spinner, StatCard, relationshipTone } from "../components/ui";
 import { buildMappingIndex, factorColor, searchMappings } from "../lib/mappingGraph";
@@ -76,6 +79,7 @@ export default function MappingsPage() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [mappedOnly, setMappedOnly] = useState(false);
   const [relationship, setRelationship] = useState("ALL");
+  const [view, setView] = useState<"flow" | "graph">("flow");
   const [selected, setSelected] = useState<MappingSelection | null>(null);
   const [focusTarget, setFocusTarget] = useState<(MappingSelection & { nonce: number }) | null>(null);
 
@@ -219,11 +223,6 @@ export default function MappingsPage() {
       })
     : [];
 
-  const visibleBacklogLinks =
-    relationship === "ALL"
-      ? data.links.factor_backlog.length
-      : data.links.factor_backlog.filter((link) => link.relationship === relationship).length;
-
   const detailTitle = selected ? `${KIND_LABELS[selected.kind]} ${selected.id}` : "Trace a path";
   const detailHint = selected
     ? "Connected nodes are clickable. Use focus to center this node in the graph."
@@ -252,23 +251,23 @@ export default function MappingsPage() {
           tone="accent"
         />
         <StatCard
-          label="Themes"
+          label="Signals"
+          value={number(data.counts.signals_total)}
+          detail={`${number(data.counts.signals_linked)} linked to canonical problems`}
+          icon={<Activity size={17} />}
+        />
+        <StatCard
+          label="Canonical problems"
           value={number(data.counts.themes)}
-          detail={`${number(data.counts.feedback_theme_links)} feedback-theme links`}
+          detail={`${number(data.coverage.covered)} covered · ${number(data.coverage.not_covered)} not covered`}
           icon={<Waypoints size={17} />}
         />
         <StatCard
-          label="Factors"
-          value={number(data.counts.factors)}
-          detail={`${number(data.counts.theme_factor_links)} theme-factor memberships`}
-          icon={<Sparkles size={17} />}
-        />
-        <StatCard
           label="Backlogs"
-          value={number(data.counts.backlogs)}
-          detail={`${number(visibleBacklogLinks)} visible factor-backlog findings`}
+          value={number(data.coverage_backlogs.length)}
+          detail={`${number(data.links.problem_backlog.length)} problem-coverage paths`}
           icon={<ShieldCheck size={17} />}
-          tone={data.counts.backlogs ? "default" : "warning"}
+          tone={data.coverage_backlogs.length ? "default" : "warning"}
         />
       </div>
 
@@ -281,7 +280,33 @@ export default function MappingsPage() {
       )}
 
       <div className="mapping-layout">
-        <Card className="mapping-graph-card" title="Mapping graph" hint="Left-to-right: feedback → themes → factors → backlogs">
+        <Card
+          className="mapping-graph-card"
+          title={view === "flow" ? "Evidence flow" : "Mapping graph"}
+          hint={
+            view === "flow"
+              ? "Feedback → signals → canonical problems → backlogs → covered / not covered"
+              : "Left-to-right: feedback → themes → factors → backlogs"
+          }
+          actions={
+            <div className="mapping-view-toggle" role="group" aria-label="Mapping view">
+              <button
+                type="button"
+                className={view === "flow" ? "active" : ""}
+                onClick={() => setView("flow")}
+              >
+                <Workflow size={13} /> Flow
+              </button>
+              <button
+                type="button"
+                className={view === "graph" ? "active" : ""}
+                onClick={() => setView("graph")}
+              >
+                <Network size={13} /> Detail graph
+              </button>
+            </div>
+          }
+        >
           <div className="mapping-toolbar">
             <div className="mapping-search">
               <div className="search-box">
@@ -329,73 +354,96 @@ export default function MappingsPage() {
                 </div>
               )}
             </div>
-            <label className="mapping-check">
-              <input
-                type="checkbox"
-                checked={mappedOnly}
-                onChange={(event) => {
-                  setMappedOnly(event.target.checked);
-                  setFocusTarget(null);
-                }}
-              />
+            {view === "flow" ? (
+              <div className="mapping-coverage-summary">
+                <span><i className="mapping-dot covered" /> {number(data.coverage.covered)} covered</span>
+                <span><i className="mapping-dot partial" /> {number(data.coverage.grey_zone)} partial</span>
+                <span><i className="mapping-dot gap" /> {number(data.coverage.not_covered)} not covered</span>
+              </div>
+            ) : (
+              <>
+                <label className="mapping-check">
+                  <input
+                    type="checkbox"
+                    checked={mappedOnly}
+                    onChange={(event) => {
+                      setMappedOnly(event.target.checked);
+                      setFocusTarget(null);
+                    }}
+                  />
+                  <span>
+                    Mapped feedback only
+                    <small>Hide {number(data.counts.feedback_unmapped)} unmapped records</small>
+                  </span>
+                </label>
+                <label className="mapping-select">
+                  <span>Factor → backlog edge</span>
+                  <select value={relationship} onChange={(event) => setRelationship(event.target.value)}>
+                    {RELATIONSHIPS.map((item) => (
+                      <option key={item} value={item}>
+                        {item === "ALL" ? "All relationships" : label(item)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
+          </div>
+          {view === "flow" ? (
+            <MappingFlow
+              data={data}
+              selection={selected}
+              onSelect={(next) => {
+                setSelected(next);
+                setFocusTarget(null);
+              }}
+            />
+          ) : (
+            <MappingGraph
+              data={data}
+              mappedOnly={mappedOnly}
+              relationship={relationship}
+              selection={selected}
+              onSelect={(next) => {
+                setSelected(next);
+                setFocusTarget(null);
+              }}
+              focusTarget={focusTarget}
+              search={search}
+            />
+          )}
+          {view === "graph" && (
+            <div className="mapping-legend">
               <span>
-                Mapped feedback only
-                <small>Hide {number(data.counts.feedback_unmapped)} unmapped records</small>
+                <i className="mapping-dot feedback" /> feedback
               </span>
-            </label>
-            <label className="mapping-select">
-              <span>Factor → backlog edge</span>
-              <select value={relationship} onChange={(event) => setRelationship(event.target.value)}>
-                {RELATIONSHIPS.map((item) => (
-                  <option key={item} value={item}>
-                    {item === "ALL" ? "All relationships" : label(item)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <MappingGraph
-            data={data}
-            mappedOnly={mappedOnly}
-            relationship={relationship}
-            selection={selected}
-            onSelect={(next) => {
-              setSelected(next);
-              setFocusTarget(null);
-            }}
-            focusTarget={focusTarget}
-            search={search}
-          />
-          <div className="mapping-legend">
-            <span>
-              <i className="mapping-dot feedback" /> feedback
-            </span>
-            <span>
-              <i className="mapping-dot theme" /> theme
-            </span>
-            <span>
-              <i className="mapping-dot factor" /> factor
-            </span>
-            <span>
-              <i className="mapping-dot backlog" /> backlog
-            </span>
-            <span>
-              <i className="mapping-line covers" /> covers
-            </span>
-            <span>
-              <i className="mapping-line partial" /> partially covers
-            </span>
-            <span>
-              <i className="mapping-line related" /> related
-            </span>
-            <span>
-              <i className="mapping-line gap" /> not covered
-            </span>
-            <span className="mapping-legend-note">
-              Theme and feedback colours follow their primary factor. Edge colour on the last hop follows the
-              relationship.
-            </span>
-          </div>
+              <span>
+                <i className="mapping-dot theme" /> theme
+              </span>
+              <span>
+                <i className="mapping-dot factor" /> factor
+              </span>
+              <span>
+                <i className="mapping-dot backlog" /> backlog
+              </span>
+              <span>
+                <i className="mapping-line covers" /> covers
+              </span>
+              <span>
+                <i className="mapping-line partial" /> partially covers
+              </span>
+              <span>
+                <i className="mapping-line related" /> related
+              </span>
+              <span>
+                <i className="mapping-line gap" /> not covered
+              </span>
+              <span className="mapping-legend-note">
+                Theme and feedback colours follow their primary factor. Edge colour on the last hop follows the
+                relationship.
+              </span>
+            </div>
+          )}
         </Card>
 
         <Card
@@ -406,7 +454,10 @@ export default function MappingsPage() {
             selected && (
               <button
                 className="btn btn-ghost"
-                onClick={() => setFocusTarget({ ...selected, nonce: Date.now() })}
+                onClick={() => {
+                  setView("graph");
+                  setFocusTarget({ ...selected, nonce: Date.now() });
+                }}
               >
                 <Crosshair size={14} />
                 Focus
@@ -419,15 +470,17 @@ export default function MappingsPage() {
               <div className="mapping-flow">
                 <span>Feedback</span>
                 <ArrowRight size={14} />
-                <span>Themes</span>
+                <span>Signals</span>
                 <ArrowRight size={14} />
-                <span>Factors</span>
+                <span>Problems</span>
                 <ArrowRight size={14} />
                 <span>Backlogs</span>
+                <ArrowRight size={14} />
+                <span>Coverage</span>
               </div>
               <p>
-                Use the graph to inspect how individual customer feedback rolls up into themes, how themes load on
-                prioritized factors, and which backlog items those factors support.
+                Follow the flow from feedback through computed signals into canonical problems and backlog coverage,
+                or switch to the detail graph to trace individual factor-backed paths.
               </p>
               <div className="mapping-detail-kv">
                 <div>

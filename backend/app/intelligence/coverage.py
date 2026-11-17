@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
@@ -11,6 +12,7 @@ from ..config import Settings
 from .embeddings import build_coverage_embedder
 from .llm_client import LLMUnavailable, StructuredLLMClient
 from .text import token_set
+from .whitespace.models import LensAssociation
 
 AGENT_ROLES: list[dict[str, str]] = [
     {
@@ -52,6 +54,7 @@ class CoverageVerdict:
     decision: str
     rationale: str
     grey_zone: dict[str, Any] | None = None
+    lens_graduation: dict[str, Any] | None = None
 
 
 @dataclass
@@ -91,6 +94,7 @@ class GreyZoneConsortium:
             provider="auto",
             timeout=settings.canonicalisation_timeout_seconds,
             temperature=settings.canonicalisation_temperature,
+            max_attempts=settings.grey_zone_llm_max_attempts,
         )
 
     def _worker_client(self) -> StructuredLLMClient:
@@ -101,6 +105,7 @@ class GreyZoneConsortium:
             provider="auto",
             timeout=self.settings.canonicalisation_timeout_seconds,
             temperature=self.settings.canonicalisation_temperature,
+            max_attempts=self.settings.grey_zone_llm_max_attempts,
         )
 
     def _heuristic(self, problem: dict[str, Any], backlog: dict[str, Any], score: float) -> str:
@@ -372,6 +377,7 @@ class CoverageAssessment:
         self,
         canonical_problems: list[dict[str, Any]],
         backlog_items: list[dict[str, Any]],
+        lens_associations: Mapping[str, LensAssociation] | None = None,
     ) -> CoverageOutput:
         thresholds = {
             "match": self.settings.coverage_match_threshold,
@@ -430,6 +436,33 @@ class CoverageAssessment:
                 verdicts[position].decision = deliberation["final_decision"]
                 verdicts[position].rationale = deliberation["rationale"]
                 verdicts[position].grey_zone = deliberation
+        if lens_associations:
+            for verdict in verdicts:
+                association = lens_associations.get(verdict.problem_id)
+                if association is None or verdict.coverage_status != "grey_zone" or verdict.decision != "MISMATCH":
+                    continue
+                if association.association_score <= self.settings.lens_graduation_threshold:
+                    continue
+                original_decision = verdict.decision
+                graduation = {
+                    "lens_name": association.lens_name,
+                    "association_score": round(association.association_score, 4),
+                    "signal_score": round(association.signal_score, 4),
+                    "signal_score_threshold": self.settings.lens_graduation_signal_threshold,
+                    "threshold": self.settings.lens_graduation_threshold,
+                    "original_decision": original_decision,
+                    "final_decision": "MATCH",
+                    "shared_feedback_count": association.shared_feedback_count,
+                    "rationale": (
+                        f"{association.lens_name} signal (internal score {association.signal_score:.4f}, "
+                        f"association {association.association_score:.4f}) graduated this grey-zone canonical "
+                        "problem to the matched group despite the consortium MISMATCH decision."
+                    ),
+                }
+                verdict.decision = "MATCH"
+                verdict.coverage_status = "covered"
+                verdict.lens_graduation = graduation
+                verdict.rationale = f"{verdict.rationale} {graduation['rationale']}"
         return CoverageOutput(
             scores=scores,
             verdicts=verdicts,

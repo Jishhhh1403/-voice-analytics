@@ -21,6 +21,7 @@ COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("duplicate_type", "TEXT"),
         ("quality_flags_json", "TEXT"),
         ("pii_types_json", "TEXT"),
+        ("is_primary_record", "INTEGER DEFAULT 1"),
     ],
     "extracted_insights": [
         ("intents_json", "TEXT"),

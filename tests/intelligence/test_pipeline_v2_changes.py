@@ -13,6 +13,7 @@ from app.intelligence.cluster_assignment import assign_clusters
 from app.intelligence.coverage import CoverageAssessment, GreyZoneConsortium
 from app.intelligence.embeddings import WeightedTfidfEmbedder
 from app.intelligence.llm_client import StructuredLLMClient, StructuredResponse
+from app.intelligence.whitespace.models import LensAssociation
 
 
 def _settings(**overrides: object) -> Settings:
@@ -272,6 +273,78 @@ def test_coverage_thresholds_route_grey_zone_to_consortium(monkeypatch: pytest.M
     assert result.verdicts[1].decision == "MISMATCH"
     assert consortium.calls == [("CP-2", "BL-2", pytest.approx(0.733, abs=0.002))]
     assert set(result.thresholds) == {"match", "mismatch"}
+
+
+def test_lens_graduation_overrides_grey_zone_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(coverage_match_threshold=0.75, coverage_mismatch_threshold=0.60)
+    embedder = type("FakeEmbedder", (), {"model_name": "fake-bge-large"})()
+    problem_vectors = np.asarray([[0.68, np.sqrt(1.0 - 0.68**2)]], dtype=np.float32)
+    backlog_vectors = np.asarray([[1.0, 0.0]], dtype=np.float32)
+    monkeypatch.setattr(
+        "app.intelligence.coverage.build_coverage_embedder",
+        lambda *_: (embedder, problem_vectors, backlog_vectors),
+    )
+
+    class _FakeConsortium:
+        def deliberate(self, problem: dict[str, object], backlog: dict[str, object], score: float) -> dict[str, object]:
+            return {
+                "agents": [],
+                "chair": {"decision": "MISMATCH", "confidence": 0.7, "rationale": "Material scope gap"},
+                "final_decision": "MISMATCH",
+                "final_confidence": 0.7,
+                "rationale": "Material scope gap",
+            }
+
+    associations = {
+        "CP-1": LensAssociation("CP-1", "GRAPH_BRIDGE", 0.64, 0.72, "payments.status", "track_transfer", "status", 4)
+    }
+    result = CoverageAssessment(settings, _FakeConsortium()).assess(  # type: ignore[arg-type]
+        [{"problem_id": "CP-1", "title": "Transfer status unclear"}],
+        [{"backlog_id": "BL-1", "title": "Transfer status page"}],
+        lens_associations=associations,
+    )
+    verdict = result.verdicts[0]
+    assert verdict.coverage_status == "covered"
+    assert verdict.decision == "MATCH"
+    assert verdict.lens_graduation is not None
+    assert verdict.lens_graduation["original_decision"] == "MISMATCH"
+    assert verdict.lens_graduation["lens_name"] == "GRAPH_BRIDGE"
+    assert verdict.grey_zone is not None
+    assert verdict.grey_zone["final_decision"] == "MISMATCH"
+
+
+def test_lens_graduation_respects_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(coverage_match_threshold=0.75, coverage_mismatch_threshold=0.60)
+    embedder = type("FakeEmbedder", (), {"model_name": "fake-bge-large"})()
+    problem_vectors = np.asarray([[0.68, np.sqrt(1.0 - 0.68**2)]], dtype=np.float32)
+    backlog_vectors = np.asarray([[1.0, 0.0]], dtype=np.float32)
+    monkeypatch.setattr(
+        "app.intelligence.coverage.build_coverage_embedder",
+        lambda *_: (embedder, problem_vectors, backlog_vectors),
+    )
+
+    class _FakeConsortium:
+        def deliberate(self, problem: dict[str, object], backlog: dict[str, object], score: float) -> dict[str, object]:
+            return {
+                "agents": [],
+                "chair": {"decision": "MISMATCH", "confidence": 0.7, "rationale": "Material scope gap"},
+                "final_decision": "MISMATCH",
+                "final_confidence": 0.7,
+                "rationale": "Material scope gap",
+            }
+
+    associations = {
+        "CP-1": LensAssociation("CP-1", "SPATIAL_VOID", 0.49, 0.55, "payments.status", "track_transfer", "status", 2)
+    }
+    result = CoverageAssessment(settings, _FakeConsortium()).assess(  # type: ignore[arg-type]
+        [{"problem_id": "CP-1", "title": "Transfer status unclear"}],
+        [{"backlog_id": "BL-1", "title": "Transfer status page"}],
+        lens_associations=associations,
+    )
+    verdict = result.verdicts[0]
+    assert verdict.coverage_status == "grey_zone"
+    assert verdict.decision == "MISMATCH"
+    assert verdict.lens_graduation is None
 
 
 def test_grey_zone_consortium_uses_specialists_and_chair() -> None:

@@ -4150,6 +4150,52 @@ th.num {
   overflow: visible;
 }
 
+.mapping-view-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-alt);
+}
+
+.mapping-view-toggle button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mapping-view-toggle button.active {
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--accent);
+}
+
+.mapping-coverage-summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-bottom: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mapping-coverage-summary > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .mapping-toolbar {
   display: flex;
   align-items: flex-end;
@@ -4472,6 +4518,117 @@ th.num {
   line-height: 1.4;
 }
 
+.mapping-dot.covered {
+  background: #24924a;
+}
+
+.mapping-dot.partial {
+  background: #c88918;
+}
+
+.mapping-flow-diagram {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background:
+    radial-gradient(circle at 16% 8%, rgba(15, 159, 122, 0.08), transparent 32%),
+    radial-gradient(circle at 86% 88%, rgba(60, 114, 209, 0.08), transparent 34%),
+    var(--surface);
+}
+
+.mapping-flow-diagram > svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.mapping-flow-stage-index {
+  fill: #0f9f7a;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.mapping-flow-stage-label {
+  fill: var(--text);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mapping-flow-stage-total {
+  fill: var(--faint);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mapping-flow-ribbons path {
+  fill: none;
+  stroke-linecap: round;
+  transition: opacity 140ms ease;
+}
+
+.mapping-flow-node {
+  transition: opacity 140ms ease;
+}
+
+.mapping-flow-node.clickable {
+  cursor: pointer;
+}
+
+.mapping-flow-node-title,
+.mapping-flow-node-subtitle,
+.mapping-flow-node-value {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  pointer-events: none;
+}
+
+.mapping-flow-node-title {
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.mapping-flow-node-subtitle {
+  font-size: 10px;
+  opacity: 0.78;
+}
+
+.mapping-flow-node-value {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.mapping-flow-note {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.mapping-flow-arrow {
+  fill: none;
+  stroke-dasharray: 3 4;
+}
+
+.mapping-flow-caption {
+  display: flex;
+  align-items: center;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.mapping-flow-caption > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .mapping-detail-card {
   position: sticky;
   top: 16px;
@@ -4710,6 +4867,13 @@ th.num {
   }
   .mapping-graph-hint {
     display: none;
+  }
+  .mapping-flow-caption .mapping-legend-note {
+    flex-basis: 100%;
+  }
+  .mapping-view-toggle button {
+    padding: 6px;
+    font-size: 0;
   }
   .mapping-detail-kv {
     grid-template-columns: minmax(0, 1fr);

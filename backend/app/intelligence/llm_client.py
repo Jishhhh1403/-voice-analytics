@@ -34,6 +34,7 @@ class StructuredLLMClient:
         model: str | None = None,
         timeout: float | None = None,
         temperature: float = 0.0,
+        max_attempts: int = 8,
     ) -> None:
         self.settings = settings
         requested = (provider or "auto").lower().replace("-", "_")
@@ -55,6 +56,7 @@ class StructuredLLMClient:
         )
         self.timeout = timeout if timeout is not None else settings.llm_timeout_seconds
         self.temperature = temperature
+        self.max_attempts = max(1, max_attempts)
         self.api_keys = (
             [key for key in (settings.gemini_api_key, settings.gemini_api_key_1, settings.gemini_api_key_2) if key]
             if self.kind == "gemini"
@@ -107,7 +109,7 @@ class StructuredLLMClient:
         )
         using_fallback = False
         reverted_model = False
-        for attempt in range(8):
+        for attempt in range(self.max_attempts):
             request = self._request(prompt)
             try:
                 response = httpx.post(timeout=self.timeout, **request)
@@ -144,13 +146,13 @@ class StructuredLLMClient:
                     logger.warning("Gemini fallback failed; reverted to %s", original_model)
                     time.sleep(1)
                     continue
-                if status in {429, 500, 502, 503, 504} and attempt < 5:
+                if status in {429, 500, 502, 503, 504} and attempt < self.max_attempts - 1:
                     delay = min(30, 2**attempt * 2)
                     time.sleep(delay + random.uniform(0, delay / 2))
                     continue
                 raise LLMUnavailable(f"LLM HTTP {status}: {body}") from exc
             except (httpx.TimeoutException, httpx.TransportError) as exc:
-                if attempt < 5:
+                if attempt < self.max_attempts - 1:
                     delay = min(30, 2**attempt * 2)
                     time.sleep(delay + random.uniform(0, delay / 2))
                     continue

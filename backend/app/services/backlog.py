@@ -17,9 +17,11 @@ from ..intelligence.coverage import CoverageAssessment
 from ..intelligence.retrieval import HybridRetriever
 from ..intelligence.taxonomy import Taxonomy
 from ..intelligence.text import jaccard, token_set, tokenize
+from ..intelligence.whitespace.models import LensAssociation
 from ..repository import Repository, now_iso
 from ..storage import ObjectStore, build_object_store
 from .factor_prioritisation import FactorPrioritisationService
+from .whitespace import WhitespaceDiscoveryService
 
 logger = logging.getLogger("bci.backlog")
 
@@ -784,6 +786,17 @@ class BacklogValidationService:
         }
         return report, findings, summary
 
+    def _lens_associations(self, run_id: str, upload_id: str | None) -> dict[str, LensAssociation]:
+        if not self.settings.lens_graduation_enabled:
+            return {}
+        try:
+            return WhitespaceDiscoveryService(self.settings, self.repo).lens_associations(
+                run_id=run_id, upload_id=upload_id
+            )
+        except Exception:
+            logger.warning("lens signal discovery failed; skipping lens graduation", exc_info=True)
+            return {}
+
     def _validate_problems(self, upload: dict[str, Any], profiles: list[BacklogProfile]) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
         latest_run = self.repo.latest_completed_feedback_run()
         if not latest_run:
@@ -815,7 +828,12 @@ class BacklogValidationService:
             }
             for profile in profiles
         ]
-        coverage = CoverageAssessment(self.settings).assess([dict(problem) for problem in problems], backlog_items)
+        lens_associations = self._lens_associations(run_id, upload.get("upload_id"))
+        coverage = CoverageAssessment(self.settings).assess(
+            [dict(problem) for problem in problems],
+            backlog_items,
+            lens_associations=lens_associations,
+        )
         verdicts = {verdict.problem_id: verdict for verdict in coverage.verdicts}
 
         evidence_by_problem = self._evidence(run_id)
@@ -870,6 +888,16 @@ class BacklogValidationService:
                 uncertainty = None
                 if coverage_status == "grey_zone" and not is_closest:
                     uncertainty = "Grey-zone score; only the closest backlog item is adjudicated by the agent consortium."
+                elif is_closest and verdict and verdict.lens_graduation:
+                    deliberation = verdict.grey_zone or {}
+                    consortium_decision = str(deliberation.get("final_decision") or verdict.lens_graduation["original_decision"])
+                    uncertainty = (
+                        f"Consortium decision {consortium_decision}: {str(deliberation.get('rationale') or '')[:180]} "
+                        f"Lens graduation by {verdict.lens_graduation['lens_name']} "
+                        f"(internal score {verdict.lens_graduation['signal_score']:.2f}, "
+                        f"association {verdict.lens_graduation['association_score']:.2f}): "
+                        "grey-zone problem promoted to the matched group despite the consortium decision."
+                    )
                 elif is_closest and verdict and verdict.grey_zone:
                     uncertainty = f"Consortium decision {decision}: {verdict.grey_zone['rationale'][:180]}"
                 finding = {
@@ -892,6 +920,7 @@ class BacklogValidationService:
                     "coverage_model": coverage.model_name,
                     "closest_backlog_id": verdict.closest_backlog_id if is_closest and verdict else None,
                     "grey_zone_deliberation": verdict.grey_zone if is_closest and verdict else None,
+                    "lens_graduation": verdict.lens_graduation if is_closest and verdict else None,
                     "embedding_similarity": score,
                     "embedding_distance": round(1.0 - score, 4),
                     "supporting_feedback_count": supporting,
@@ -967,11 +996,13 @@ class BacklogValidationService:
                 "decision": verdict.decision,
                 "rationale": verdict.rationale,
                 "grey_zone_deliberation": verdict.grey_zone,
+                "lens_graduation": verdict.lens_graduation,
             }
             for verdict in coverage.verdicts
         ]
         status_counts = Counter(item["coverage_status"] for item in canonical_coverage)
         decision_counts = Counter(item["decision"] for item in canonical_coverage)
+        lens_graduated_count = sum(1 for item in canonical_coverage if item["lens_graduation"])
         uncovered = [
             problem
             for problem in problems
@@ -993,6 +1024,7 @@ class BacklogValidationService:
             "covered_canonical_problems": status_counts.get("covered", 0),
             "grey_zone_canonical_problems": status_counts.get("grey_zone", 0),
             "not_covered_canonical_problems": status_counts.get("not_covered", 0),
+            "lens_graduated_canonical_problems": lens_graduated_count,
             "taxonomy_version": self.taxonomy.version,
             "embedding_model": coverage.model_name,
             "retrieval": {
@@ -1038,6 +1070,10 @@ class BacklogValidationService:
                 "Organisational priority is not calculated; source priority is preserved as metadata.",
                 "A NEEDS_REVIEW relationship must be resolved by a product owner before it is treated as aligned.",
                 "Coverage scores are BGE cosine similarities clipped to 0-1; grey-zone scores are adjudicated by an LLM agent consortium.",
+                "Grey-zone canonical problems with signal association above "
+                f"{self.settings.lens_graduation_threshold:.2f} to GRAPH_BRIDGE or COMBINATORIAL_LATTICE lens signals "
+                f"with internal signal score above {self.settings.lens_graduation_signal_threshold:.2f} are graduated "
+                "to the matched group even when the consortium votes MISMATCH.",
             ],
         }
         return report, findings, summary

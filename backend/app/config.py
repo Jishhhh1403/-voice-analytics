@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     grey_zone_agent_count: int = 3
     grey_zone_batch_size: int = 50
     grey_zone_max_workers: int = 3
+    grey_zone_llm_max_attempts: int = 1
+    lens_graduation_enabled: bool = True
+    lens_graduation_threshold: float = 0.5
+    lens_graduation_signal_threshold: float = 0.6
     clustering_provider: str = "hdbscan"
     clustering_similarity_threshold: float = 0.64
     min_cluster_evidence: int = 1

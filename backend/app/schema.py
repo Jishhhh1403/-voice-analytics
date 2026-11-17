@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS feedback_records (
     quality_flags_json TEXT,
     pii_types_json TEXT,
     is_synthetic INTEGER DEFAULT 1,
+    is_primary_record INTEGER DEFAULT 1,
     created_at TEXT NOT NULL,
     PRIMARY KEY (run_id, feedback_id)
 );

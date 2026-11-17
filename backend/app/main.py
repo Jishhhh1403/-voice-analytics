@@ -16,6 +16,7 @@ from .api.mapping_routes import router as mapping_router
 from .api.portfolio_routes import router as portfolio_router
 from .api.prioritisation_routes import router as prioritisation_router
 from .api.routes import router
+from .api.whitespace_routes import router as whitespace_router
 from .config import Settings, get_settings
 from .db import Database
 from .repository import Repository
@@ -25,6 +26,7 @@ from .services.mappings import MappingGraphService
 from .services.pipeline import FeedbackPipelineService
 from .services.problem_dimensions import ProblemDimensionService
 from .services.problem_portfolio import ProblemPortfolioService
+from .services.whitespace import WhitespaceDiscoveryService
 from .storage import build_object_store
 
 
@@ -67,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     problem_portfolio = ProblemPortfolioService(settings, repo)
     factor_prioritisation = FactorPrioritisationService(settings, repo)
     mappings = MappingGraphService(repo)
+    whitespace = WhitespaceDiscoveryService(settings, repo)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -102,6 +105,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.problem_portfolio = problem_portfolio
     app.state.factor_prioritisation = factor_prioritisation
     app.state.mappings = mappings
+    app.state.whitespace = whitespace
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_list,
@@ -116,6 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(mapping_router, prefix=settings.api_prefix)
     app.include_router(portfolio_router, prefix=settings.api_prefix)
     app.include_router(prioritisation_router, prefix=settings.api_prefix)
+    app.include_router(whitespace_router, prefix=settings.api_prefix)
 
     @app.get("/")
     def root() -> dict[str, Any]:

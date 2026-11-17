@@ -327,6 +327,13 @@ export default function ReportPage() {
                         <article className="finding" key={finding.finding_id}>
                           <div className="finding-head">
                             <Badge tone={relationshipTone(finding.relationship)}>{label(finding.relationship)}</Badge>
+                            {finding.lens_graduation && (
+                              <span className="badge badge-violet" title={finding.lens_graduation.rationale}>
+                                Lens graduated · {finding.lens_graduation.lens_name} · signal{" "}
+                                {finding.lens_graduation.signal_score.toFixed(2)} · assoc{" "}
+                                {finding.lens_graduation.association_score.toFixed(2)}
+                              </span>
+                            )}
                             <Link to={finding.problem_id ? `/problems/${finding.problem_id}` : "#"} className="finding-title">
                               {finding.problem_title || "No matched problem"}
                             </Link>
