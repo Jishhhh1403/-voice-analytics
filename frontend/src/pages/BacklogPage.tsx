@@ -72,7 +72,7 @@ export default function BacklogPage() {
     <div className="page">
       <PageHeader
         eyebrow="Backlog validation"
-        title="Validate a backlog against prioritized factors"
+        title="Validate backlogs"
         subtitle="Match each backlog item lexically and semantically to the factors discovered in factor prioritisation, then rank backlog coverage by factor priority. The platform does not edit your backlog."
       />
 

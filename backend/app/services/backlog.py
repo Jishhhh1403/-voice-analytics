@@ -797,13 +797,20 @@ class BacklogValidationService:
             logger.warning("lens signal discovery failed; skipping lens graduation", exc_info=True)
             return {}
 
+    @staticmethod
+    def _problem_issue_key(problem: dict[str, Any]) -> str:
+        signature = str(problem.get("signature") or "").strip().lower()
+        if signature:
+            return signature.rsplit("|", 1)[0] if "|" in signature else signature
+        return " ".join(str(problem.get("title") or "").lower().split())
+
     def _validate_problems(self, upload: dict[str, Any], profiles: list[BacklogProfile]) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
         latest_run = self.repo.latest_completed_feedback_run()
         if not latest_run:
             raise ValueError("run a feedback pipeline before validating a backlog")
         run_id = latest_run["run_id"]
         problems = self.repo.db.query(
-            "SELECT p.problem_id, p.title, p.problem_statement, p.canonical_description, p.customer_intent, "
+            "SELECT p.problem_id, p.title, p.signature, p.problem_statement, p.canonical_description, p.customer_intent, "
             "p.aspect, p.symptom_category, p.journey_node_id, p.evidence_count, p.distinct_customers, "
             "p.negative_count, p.last_seen, "
             "(SELECT display_name FROM taxonomy_nodes t WHERE t.node_id=p.journey_node_id ORDER BY t.version DESC LIMIT 1) "
@@ -848,8 +855,15 @@ class BacklogValidationService:
                 reverse=True,
             )
             item_findings: list[dict[str, Any]] = []
+            seen_issue_keys: set[str] = set()
+            issue_members: dict[str, list[str]] = {}
             for rank, (score, problem_index) in enumerate(candidates[:8]):
                 problem = problems[problem_index]
+                issue_key = self._problem_issue_key(problem)
+                issue_members.setdefault(issue_key, []).append(problem["problem_id"])
+                if issue_key in seen_issue_keys:
+                    continue
+                seen_issue_keys.add(issue_key)
                 node_alignment, node_reason = self._node_alignment(profile, problem)
                 intent_alignment = self._intent_alignment(profile, problem)
                 symptom_coverage, covered, uncovered = self._symptom_coverage(profile, problem)
@@ -905,6 +919,7 @@ class BacklogValidationService:
                     "backlog_id": profile.backlog_id,
                     "problem_id": problem["problem_id"],
                     "problem_title": problem["title"],
+                    "issue_key": issue_key,
                     "relationship": relationship,
                     "rationale": (
                         f"{node_reason} Intent alignment {intent_alignment:.2f}; symptom coverage {symptom_coverage:.2f}; "
@@ -933,7 +948,7 @@ class BacklogValidationService:
                 }
                 item_findings.append(finding)
                 if (is_closest and decision == "MATCH") or (not is_closest and relationship == "ADDRESSES"):
-                    addressed_problem_ids.add(problem["problem_id"])
+                    addressed_problem_ids.update(issue_members[issue_key])
             item_findings.sort(key=lambda item: (item["alignment_score"], item["supporting_feedback_count"]), reverse=True)
             findings.extend(item_findings)
             overall, best = self._overall(item_findings)

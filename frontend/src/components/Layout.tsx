@@ -1,14 +1,11 @@
 import {
   BookOpenCheck,
-  BrainCircuit,
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
   Database,
   Gauge,
   GitBranch,
-  Layers3,
-  ListOrdered,
   Menu,
   Network,
   ShieldAlert,
@@ -36,9 +33,6 @@ const navigation = [
   { to: "/problems", label: "Customer problems", icon: ShieldAlert },
   { to: "/themes", label: "Theme map", icon: Network },
   { to: "/mappings", label: "Mappings", icon: Workflow },
-  { to: "/dimensions", label: "Factor analysis", icon: Layers3 },
-  { to: "/prioritization", label: "Prioritization", icon: ListOrdered },
-  { to: "/portfolio", label: "Narrative serialization", icon: BrainCircuit },
   { to: "/backlog", label: "Backlog validation", icon: UploadCloud },
 ];
 

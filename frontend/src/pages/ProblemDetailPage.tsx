@@ -4,7 +4,6 @@ import {
   BrainCircuit,
   CheckCircle2,
   ChevronDown,
-  Layers3,
   Quote,
   ShieldCheck,
   Star,
@@ -19,7 +18,6 @@ import { date, dateTime, label, number } from "../lib/format";
 import type {
   MeasurementSnapshot,
   ProblemDetail,
-  ProblemDimensions,
   ProblemMeasurement,
   ProblemPriority,
 } from "../lib/types";
@@ -96,10 +94,6 @@ export default function ProblemDetailPage() {
   const { data, loading, error, reload } = useFetch<ProblemDetail>(problemId ? `/problems/${problemId}` : null, [problemId]);
   const measurement = useFetch<ProblemMeasurement>(problemId ? `/problems/${problemId}/measurement` : null, [problemId]);
   const priority = useFetch<ProblemPriority>(problemId ? `/problems/${problemId}/priority` : null, [problemId]);
-  const dimensions = useFetch<ProblemDimensions>(
-    problemId ? `/problem-dimensions/latest/problems/${problemId}` : null,
-    [problemId],
-  );
   const [reviewer, setReviewer] = useState("journey-expert");
   const [decision, setDecision] = useState("accept");
   const [note, setNote] = useState("");
@@ -361,80 +355,6 @@ export default function ProblemDetailPage() {
           <p className="footnote">Measurement endpoints returned no snapshot for this run.</p>
         )}
       </Card>
-
-      {dimensions.data && dimensions.data.scores.length > 0 && (
-        <Card
-          title="Experience dimensions"
-          hint="Published FAMD pattern associations. These are exploratory dimensions, not proven root causes."
-          actions={<Badge tone="violet">Published run</Badge>}
-        >
-          <div className="problem-dimension-layout">
-            <div className="problem-dimension-dominant">
-              <span>Dominant candidate dimension</span>
-              <h3>{dimensions.data.dominant_dimension?.analyst_name || "Unnamed dimension"}</h3>
-              <p>{dimensions.data.dominant_dimension?.description || "No reviewed description is available."}</p>
-              <div className="header-badges">
-                {dimensions.data.dominant_dimension?.membership_type && (
-                  <Badge tone="blue">{label(dimensions.data.dominant_dimension.membership_type)}</Badge>
-                )}
-                {dimensions.data.ambiguous && <Badge tone="amber">Ambiguous assignment</Badge>}
-                <Badge tone="neutral">
-                  score{" "}
-                  {dimensions.data.dominant_dimension?.coordinate !== undefined &&
-                  dimensions.data.dominant_dimension?.coordinate !== null
-                    ? dimensions.data.dominant_dimension.coordinate.toFixed(2)
-                    : "-"}
-                </Badge>
-              </div>
-              <Link
-                className="btn btn-ghost btn-small"
-                to={`/dimensions/${dimensions.data.dominant_dimension?.dimension_id}?run=${dimensions.data.run_id}`}
-              >
-                <Layers3 size={14} />
-                Inspect dimension
-              </Link>
-            </div>
-            <div className="problem-dimension-score-list">
-              {dimensions.data.scores.map((score) => {
-                const maxScore = Math.max(
-                  0.0001,
-                  ...dimensions.data!.scores.map((item) => Math.abs(item.coordinate)),
-                );
-                return (
-                  <div className="problem-dimension-score" key={score.dimension_id}>
-                    <div>
-                      <strong>{score.analyst_name || score.dimension_id}</strong>
-                      <span>
-                        {score.dimension_id} · {label(score.membership_type || "unassigned")}
-                        {score.relative_squared_coordinate_share_pct !== null &&
-                        score.relative_squared_coordinate_share_pct !== undefined
-                          ? ` · ${score.relative_squared_coordinate_share_pct.toFixed(1)}% squared share`
-                          : ""}
-                      </span>
-                    </div>
-                    <div className="problem-dimension-track">
-                      <span style={{ width: `${Math.max(2, (Math.abs(score.coordinate) / maxScore) * 100)}%` }} />
-                    </div>
-                    <strong className="mono">{score.coordinate.toFixed(2)}</strong>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-          {dimensions.data.equation?.equation_text && (
-            <div className="problem-dimension-equation">
-              <span>Signed factor equation</span>
-              <code>{dimensions.data.equation.equation_text}</code>
-              <small>Coefficients are FAMD row coordinates, not causal effects.</small>
-            </div>
-          )}
-          <p className="footnote">
-            Coordinates are centered FAMD scores from run <span className="mono">{dimensions.data.run_id}</span>. A
-            negative coordinate is the opposite side of the same pattern, not a separate dimension. Missing inputs are
-            imputed for fitting and remain visible in the run quality report.
-          </p>
-        </Card>
-      )}
 
       <div className="grid grid-detail">
         <div className="stack">

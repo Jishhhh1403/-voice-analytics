@@ -269,6 +269,7 @@ export type Finding = {
   backlog_id: string;
   problem_id?: string | null;
   problem_title?: string | null;
+  issue_key?: string | null;
   relationship: string;
   rationale: string;
   alignment_score: number;

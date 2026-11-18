@@ -4,10 +4,21 @@ import { Link, useParams } from "react-router-dom";
 import { Badge, Card, EmptyState, ErrorState, PageHeader, Spinner, relationshipTone } from "../components/ui";
 import { download, postJSON } from "../lib/api";
 import { date, dateTime, label, number } from "../lib/format";
-import type { Report } from "../lib/types";
+import type { Finding, Report } from "../lib/types";
 import { useFetch } from "../lib/useFetch";
 
 const ALIGNMENTS = ["strong", "partial", "weak", "unsupported", "needs_review"];
+
+function uniqueFindings(findings: Finding[]): Finding[] {
+  const seen = new Set<string>();
+  return findings.filter((finding) => {
+    const titleKey = (finding.problem_title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const key = (finding.issue_key || titleKey || finding.problem_id || finding.finding_id).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 export default function ReportPage() {
   const { reportId } = useParams();
@@ -255,7 +266,7 @@ export default function ReportPage() {
                     <>
                       <span>{item.journey_name}</span>
                       <span>{Math.round(item.ac_coverage * 100)}% AC coverage</span>
-                      <span>{item.findings.length} findings</span>
+                      <span>{uniqueFindings(item.findings).length} findings</span>
                     </>
                   )}
                   <span className="priority">{item.priority || "No source priority"}</span>
@@ -323,7 +334,7 @@ export default function ReportPage() {
                           )}
                         </article>
                       ))
-                    : item.findings.map((finding) => (
+                    : uniqueFindings(item.findings).map((finding) => (
                         <article className="finding" key={finding.finding_id}>
                           <div className="finding-head">
                             <Badge tone={relationshipTone(finding.relationship)}>{label(finding.relationship)}</Badge>
